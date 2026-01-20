@@ -19,11 +19,11 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
 
         // 🚀 OPTIMIZATION: Use Aggregation instead of fetching all records
         const stats = await Attendance.aggregate([
-            { 
-                $match: { classId: new mongoose.Types.ObjectId(classId) } 
+            {
+                $match: { classId: new mongoose.Types.ObjectId(classId) }
             },
-            { 
-                $unwind: "$periods" 
+            {
+                $unwind: "$periods"
             },
             {
                 $group: {
@@ -51,17 +51,17 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
             const stat = statsMap[subject._id.toString()] || { totalClasses: 0, attendedClasses: 0 };
             const { totalClasses, attendedClasses } = stat;
 
-            const percentage = totalClasses === 0 ? 100 : ((attendedClasses / totalClasses) * 100).toFixed(1);
+            const percentage = totalClasses === 0 ? 0 : ((attendedClasses / totalClasses) * 100).toFixed(1);
             const floatPercentage = parseFloat(percentage);
 
             let bunkMsg = "";
             const minPercentage = classroom.settings?.minAttendancePercentage || 75;
 
             if (floatPercentage >= minPercentage + 5) { // Safe buffer
-                const canBunk = Math.floor((attendedClasses / (minPercentage/100)) - totalClasses);
+                const canBunk = Math.floor((attendedClasses / (minPercentage / 100)) - totalClasses);
                 bunkMsg = `Safe! You can bunk ${Math.max(0, canBunk)} more classes.`;
             } else if (floatPercentage < minPercentage) {
-                const mustAttend = Math.ceil(((minPercentage/100) * totalClasses - attendedClasses) / (1 - (minPercentage/100)));
+                const mustAttend = Math.ceil(((minPercentage / 100) * totalClasses - attendedClasses) / (1 - (minPercentage / 100)));
                 bunkMsg = `Danger! Attend next ${Math.max(1, mustAttend)} classes to recover.`;
             } else {
                 bunkMsg = "Borderline! Be careful.";
@@ -100,7 +100,7 @@ router.post('/simulate-bunk', async (req, res) => {
         // NOTE: For consistency, you should also apply aggregation here if this endpoint gets slow,
         // but since we need granular control for simulation, we'll keep logic similar but ensure we optimize queries later if needed.
         // For now, the bottleneck is primarily on the main dashboard load.
-        
+
         const allRecords = await Attendance.find({ classId });
 
         // 1. Calculate Current Status (Standard Loop - could be replaced by aggregation for speed)
@@ -130,16 +130,16 @@ router.post('/simulate-bunk', async (req, res) => {
         const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
         for (const [subjectId, stat] of Object.entries(currentStats)) {
-            
+
             let classesOnSelectedDates = 0;
-            
+
             dates.forEach(date => {
                 const d = new Date(date);
                 const dayOfWeek = days[d.getDay()];
                 const daySchedule = classroom.timetable?.[dayOfWeek] || [];
-                
+
                 const hasClass = daySchedule.some(slot => String(slot.subjectId) === String(subjectId));
-                
+
                 if (hasClass) classesOnSelectedDates++;
             });
 
@@ -148,8 +148,8 @@ router.post('/simulate-bunk', async (req, res) => {
                 : (stat.attendedClasses / stat.totalClasses) * 100;
 
             const afterTotal = stat.totalClasses + classesOnSelectedDates;
-            const afterAttended = stat.attendedClasses; 
-            
+            const afterAttended = stat.attendedClasses;
+
             const afterPercentage = afterTotal === 0
                 ? 100
                 : (afterAttended / afterTotal) * 100;
@@ -179,9 +179,9 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
         const queryDate = new Date(date);
         queryDate.setHours(0, 0, 0, 0);
 
-        const attendanceRecord = await Attendance.findOne({ 
-            classId, 
-            date: queryDate 
+        const attendanceRecord = await Attendance.findOne({
+            classId,
+            date: queryDate
         });
 
         if (!attendanceRecord || !attendanceRecord.periods) {
