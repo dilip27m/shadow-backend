@@ -3,7 +3,7 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // Import bcrypt for security
 const Classroom = require('../models/Classroom');
-const auth = require('../middleware/auth'); 
+const auth = require('../middleware/auth');
 
 // @route   POST /api/class/create
 // @desc    Create a new Classroom (Protected)
@@ -39,7 +39,7 @@ router.post('/create', async (req, res) => {
         res.status(201).json({
             message: 'Class Created!',
             classId: savedClass._id,
-            token, 
+            token,
             data: savedClass
         });
 
@@ -81,10 +81,10 @@ router.post('/admin-login', async (req, res) => {
             { expiresIn: '30d' }
         );
 
-        res.json({ 
-            message: 'Login successful', 
+        res.json({
+            message: 'Login successful',
             classId: classroom._id,
-            token 
+            token
         });
     } catch (err) {
         res.status(500).json({ error: 'Server Error' });
@@ -118,6 +118,72 @@ router.post('/:id/add-subject', auth, async (req, res) => {
         res.status(500).json({ error: 'Server Error' });
     }
 });
+
+// @route   PUT /api/class/:id/edit-subject/:subjectId
+// @desc    Edit an existing subject (Protected)
+router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
+    try {
+        const { name } = req.body;
+        const classId = req.params.id;
+        const subjectId = req.params.subjectId;
+
+        // Verify user owns this class
+        if (req.user.classId !== classId) {
+            return res.status(403).json({ error: 'Unauthorized action' });
+        }
+
+        const classroom = await Classroom.findById(classId);
+        if (!classroom) return res.status(404).json({ error: 'Class not found' });
+
+        const subject = classroom.subjects.id(subjectId);
+        if (!subject) return res.status(404).json({ error: 'Subject not found' });
+
+        subject.name = name;
+        await classroom.save();
+
+        res.json({
+            message: 'Subject updated successfully!',
+            subject: subject
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+
+// @route   DELETE /api/class/:id/delete-subject/:subjectId
+// @desc    Delete a subject (Protected)
+router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
+    try {
+        const classId = req.params.id;
+        const subjectId = req.params.subjectId;
+
+        // Verify user owns this class
+        if (req.user.classId !== classId) {
+            return res.status(403).json({ error: 'Unauthorized action' });
+        }
+
+        const classroom = await Classroom.findById(classId);
+        if (!classroom) return res.status(404).json({ error: 'Class not found' });
+
+        // Check if there's only one subject left
+        if (classroom.subjects.length === 1) {
+            return res.status(400).json({ error: 'Cannot delete the last subject' });
+        }
+
+        classroom.subjects.pull(subjectId);
+        await classroom.save();
+
+        res.json({
+            message: 'Subject deleted successfully!'
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
 
 // @route   PUT /api/class/update-timetable
 // @desc    Update the Weekly Timetable (Protected)
