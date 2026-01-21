@@ -68,7 +68,9 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
             }
 
             return {
-                ...subject.toObject(), // Ensure we keep original subject properties
+                _id: subject._id,
+                subjectName: subject.name, // Frontend expects 'subjectName'
+                code: subject.code,
                 percentage: floatPercentage,
                 attended: attendedClasses,
                 total: totalClasses,
@@ -157,9 +159,12 @@ router.post('/simulate-bunk', async (req, res) => {
             impacts.push({
                 subjectName: stat.subjectName,
                 currentPercentage: parseFloat(currentPercentage.toFixed(1)),
+                currentAttended: stat.attendedClasses,
+                currentTotal: stat.totalClasses,
                 afterPercentage: parseFloat(afterPercentage.toFixed(1)),
-                drop: (currentPercentage - afterPercentage).toFixed(1),
-                classesMissed: classesOnSelectedDates
+                afterAttended: afterAttended,
+                afterTotal: afterTotal,
+                classesOnSelectedDates: classesOnSelectedDates
             });
         }
 
@@ -176,26 +181,42 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
         const { classId, rollNumber, date } = req.params;
         const rollNo = parseInt(rollNumber);
 
-        const queryDate = new Date(date);
-        queryDate.setHours(0, 0, 0, 0);
+        // Normalize date to match how it's stored (same as attendance save)
+        const normalizeDate = (dateString) => {
+            const datePart = new Date(dateString).toISOString().split('T')[0];
+            return new Date(`${datePart}T00:00:00.000Z`);
+        };
 
+        const queryDate = normalizeDate(date);
+
+        console.log('🔍 Looking for:', { classId, queryDate: queryDate.toISOString(), rollNo });
+
+        // Find the most recent attendance record for this date
         const attendanceRecord = await Attendance.findOne({
             classId,
             date: queryDate
-        });
+        }).sort({ updatedAt: -1 });
 
-        if (!attendanceRecord || !attendanceRecord.periods) {
+        console.log('🔍 Student calendar lookup:', { classId, date, found: !!attendanceRecord, periods: attendanceRecord?.periods?.length || 0 });
+
+        // Only return data if attendance was actually marked
+        if (!attendanceRecord || !attendanceRecord.periods || attendanceRecord.periods.length === 0) {
+            console.log('❌ No attendance data to return');
             return res.json({ periods: [] });
         }
 
-        const periodsWithStatus = attendanceRecord.periods.map(period => ({
-            periodNum: period.periodNum,
-            subjectName: period.subjectName,
-            status: period.absentRollNumbers.includes(rollNo) ? 'Absent' : 'Present'
-        }));
+        const periodsWithStatus = attendanceRecord.periods.map(period => {
+            const isAbsent = period.absentRollNumbers.includes(rollNo);
+            return {
+                periodNum: period.periodNum,
+                subjectName: period.subjectName,
+                status: isAbsent ? 'Absent' : 'Present'
+            };
+        });
 
         res.json({ periods: periodsWithStatus });
     } catch (err) {
+        console.error('Error in day-attendance:', err);
         res.status(500).json({ error: 'Server Error' });
     }
 });
