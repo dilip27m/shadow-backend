@@ -211,15 +211,20 @@ router.put('/update-timetable', auth, async (req, res) => {
 // @desc    Update class settings (Protected)
 router.put('/update-settings', auth, async (req, res) => {
     try {
-        const { classId, settings } = req.body;
+        const { classId, settings, totalStudents } = req.body;
 
         if (req.user.classId !== classId) {
             return res.status(403).json({ error: 'Unauthorized action' });
         }
 
+        const updateData = { settings };
+        if (totalStudents !== undefined) {
+            updateData.totalStudents = totalStudents;
+        }
+
         const classroom = await Classroom.findByIdAndUpdate(
             classId,
-            { settings },
+            updateData,
             { new: true }
         );
 
