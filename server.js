@@ -1,6 +1,10 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config(); // MUST be at the top
 
 const classRoutes = require('./routes/classRoutes');
@@ -10,8 +14,37 @@ const specialDateRoutes = require('./routes/specialDateRoutes');
 
 const app = express();
 
+// Security Middleware
+app.use(helmet()); // Adds security headers
+
+// Logging Middleware (only in development and production)
+if (process.env.NODE_ENV !== 'test') {
+    app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+}
+
+// Compression Middleware
+app.use(compression());
+
+// Body Parser
 app.use(express.json());
-app.use(cors());
+
+// CORS Configuration
+const corsOptions = {
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    credentials: true,
+    optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
+
+// Rate Limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limit each IP to 100 requests per windowMs
+    message: 'Too many requests from this IP, please try again later.',
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+app.use('/api/', limiter);
 
 // DB Connection
 const connectDB = async () => {
