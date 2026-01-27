@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const SpecialDate = require('../models/SpecialDate');
+const auth = require('../middleware/auth');
 
-// Get all special dates for a class
+// Get all special dates for a class (Public for students)
 router.get('/:classId', async (req, res) => {
     try {
         const { classId } = req.params;
@@ -14,8 +15,8 @@ router.get('/:classId', async (req, res) => {
     }
 });
 
-// Create new special date
-router.post('/', async (req, res) => {
+// Create new special date (Protected)
+router.post('/', auth, async (req, res) => {
     try {
         const { classId, date, type, title } = req.body;
 
@@ -40,8 +41,8 @@ router.post('/', async (req, res) => {
     }
 });
 
-// Delete special date
-router.delete('/:id', async (req, res) => {
+// Delete special date (Protected)
+router.delete('/:id', auth, async (req, res) => {
     try {
         const { id } = req.params;
         await SpecialDate.findByIdAndDelete(id);

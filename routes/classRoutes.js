@@ -265,4 +265,22 @@ router.get('/:id', async (req, res) => {
     }
 });
 
+// @route   GET /api/class/stats/all
+// @desc    Get system statistics (total classes and students)
+router.get('/stats/all', async (req, res) => {
+    try {
+        const totalClasses = await Classroom.countDocuments();
+        const classrooms = await Classroom.find({}, 'totalStudents');
+        const totalStudents = classrooms.reduce((sum, c) => sum + c.totalStudents, 0);
+
+        res.json({
+            totalClasses,
+            totalStudents
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
 module.exports = router;

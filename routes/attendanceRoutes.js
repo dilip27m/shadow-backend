@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Attendance = require('../models/Attendance');
-const auth = require('../middleware/auth'); 
+const auth = require('../middleware/auth');
 
 // FIX: Force UTC Midnight to avoid timezone shifts
 const normalizeDate = (dateString) => {
