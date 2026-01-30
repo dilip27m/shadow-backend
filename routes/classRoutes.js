@@ -283,4 +283,75 @@ router.get('/stats/all', async (req, res) => {
     }
 });
 
+// @route   POST /api/class/create-teacher
+// @desc    Admin creates a teacher and assigns to a subject
+router.post('/create-teacher', auth, async (req, res) => {
+    try {
+        const { name, email, subjectId } = req.body;
+        const classId = req.user.classId;
+
+        // Verify Admin
+        if (!classId) return res.status(403).json({ error: 'Access Denied' });
+
+        const classroom = await Classroom.findById(classId);
+        if (!classroom) return res.status(404).json({ error: 'Class not found' });
+
+        // Check if subject exists in class
+        const subject = classroom.subjects.id(subjectId);
+        if (!subject) return res.status(404).json({ error: 'Subject not found' });
+
+        // Check if teacher already exists by email
+        // We need to import Teacher model here or at top
+        const Teacher = require('../models/Teacher'); // Import dynamically to avoid circle if any, or just safe
+
+        let teacher = await Teacher.findOne({ email });
+        let password = Math.random().toString(36).slice(-8); // Generate random password
+        let newTeacher = false;
+
+        if (!teacher) {
+            newTeacher = true;
+            const salt = await bcrypt.genSalt(10);
+            const hashedPassword = await bcrypt.hash(password, salt);
+            const teacherCode = Math.floor(1000 + Math.random() * 9000).toString(); // 4 digit code
+
+            teacher = new Teacher({
+                name,
+                email,
+                password: hashedPassword,
+                teacherCode,
+                assignedClasses: []
+            });
+        }
+
+        // Check if already assigned
+        const isAssigned = teacher.assignedClasses.some(
+            a => a.classId.toString() === classId && a.subjectId.toString() === subjectId
+        );
+
+        if (!isAssigned) {
+            teacher.assignedClasses.push({ classId, subjectId });
+            await teacher.save();
+        }
+
+        // Link teacher to subject in Classroom
+        subject.teacherId = teacher._id;
+        subject.teacherStatus = 'Pending';
+        await classroom.save();
+
+        res.json({
+            message: 'Teacher Assigned! They must accept the request in their dashboard.',
+            teacher: {
+                name: teacher.name,
+                email: teacher.email,
+                teacherCode: teacher.teacherCode
+                // Password NOT returned for security
+            }
+        });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
 module.exports = router;

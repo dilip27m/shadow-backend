@@ -9,6 +9,9 @@ const AttendanceSchema = new mongoose.Schema({
         subjectId: String,
         subjectName: String,
 
+        // Verification Fields
+        isVerified: { type: Boolean, default: false },
+        verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher' },
 
         absentRollNumbers: [{ type: Number }]
     }]

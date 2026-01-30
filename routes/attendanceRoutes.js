@@ -10,6 +10,9 @@ const normalizeDate = (dateString) => {
     return new Date(`${datePart}T00:00:00.000Z`);
 };
 
+const Classroom = require('../models/Classroom');
+const Teacher = require('../models/Teacher');
+
 // @route   POST /api/attendance/mark
 router.post('/mark', auth, async (req, res) => {
     try {
@@ -19,11 +22,40 @@ router.post('/mark', auth, async (req, res) => {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
+        const classroom = await Classroom.findById(classId);
+        if (!classroom) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        // Process periods to handle verification
+        const processedPeriods = await Promise.all(periods.map(async (p) => {
+            let isVerified = false;
+            let verifiedBy = null;
+
+            // Find the subject definition to get teacherId
+            // subjectId is stored as String in periods, but ObjectId in classroom
+            const subjectDef = classroom.subjects.find(s => s._id.toString() === p.subjectId);
+
+            if (subjectDef && subjectDef.teacherId && p.verificationCode) {
+                const teacher = await Teacher.findById(subjectDef.teacherId);
+                if (teacher && teacher.teacherCode === p.verificationCode) {
+                    isVerified = true;
+                    verifiedBy = teacher._id;
+                }
+            }
+
+            return {
+                ...p,
+                isVerified,
+                verifiedBy
+            };
+        }));
+
         const searchDate = normalizeDate(date);
 
         const updatedRecord = await Attendance.findOneAndUpdate(
             { classId: classId, date: searchDate },
-            { $set: { periods: periods } },
+            { $set: { periods: processedPeriods } },
             { new: true, upsert: true }
         );
 

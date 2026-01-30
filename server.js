@@ -64,6 +64,7 @@ connectDB();
 app.use('/api/class', classRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/student', studentRoutes);
+app.use('/api/teacher', require('./routes/teacherRoutes')); // Add Teacher Routes
 app.use('/api/special-dates', specialDateRoutes);
 app.use('/api/reports', reportRoutes);
 

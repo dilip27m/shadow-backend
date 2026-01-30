@@ -2,11 +2,11 @@ const mongoose = require('mongoose');
 
 const ClassroomSchema = new mongoose.Schema({
     // FIX: Add unique: true and trim whitespace
-    className: { 
-        type: String, 
-        required: true, 
-        unique: true, 
-        trim: true 
+    className: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true
     },
     adminPin: { type: String, required: true },
     totalStudents: { type: Number, required: true },
@@ -14,7 +14,9 @@ const ClassroomSchema = new mongoose.Schema({
     subjects: [{
         name: { type: String, required: true },
         code: { type: String },
-        totalClassesExpected: { type: Number, default: 40 }
+        totalClassesExpected: { type: Number, default: 40 },
+        teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher', default: null }, // Link subject to a teacher
+        teacherStatus: { type: String, enum: ['Pending', 'Accepted'], default: 'Pending' }
     }],
 
     timetable: {
