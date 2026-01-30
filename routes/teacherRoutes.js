@@ -8,6 +8,86 @@ const Attendance = require('../models/Attendance');
 const ModificationRequest = require('../models/ModificationRequest');
 const auth = require('../middleware/auth');
 
+// Helper function to generate unique 4-digit PIN
+async function generateUniquePin() {
+    let pin;
+    let isUnique = false;
+    let attempts = 0;
+    const maxAttempts = 100;
+
+    while (!isUnique && attempts < maxAttempts) {
+        // Generate random 4-digit number (1000-9999)
+        pin = Math.floor(1000 + Math.random() * 9000).toString();
+
+        // Check if it's unique
+        const existing = await Teacher.findOne({ teacherCode: pin });
+        if (!existing) {
+            isUnique = true;
+        }
+        attempts++;
+    }
+
+    if (!isUnique) {
+        throw new Error('Unable to generate unique PIN after maximum attempts');
+    }
+
+    return pin;
+}
+
+// @route   POST /api/teacher/register
+// @desc    Teacher Registration (Self Sign-Up)
+router.post('/register', async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+
+        // Validation
+        if (!name || !email || !password) {
+            return res.status(400).json({ error: 'Please provide name, email, and password' });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Password must be at least 6 characters' });
+        }
+
+        // Check if email already exists
+        const existingTeacher = await Teacher.findOne({ email: email.toLowerCase() });
+        if (existingTeacher) {
+            return res.status(400).json({ error: 'Email already registered' });
+        }
+
+        // Generate unique 4-digit PIN
+        const teacherCode = await generateUniquePin();
+
+        // Hash password
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        // Create teacher
+        const teacher = new Teacher({
+            name: name.trim(),
+            email: email.toLowerCase().trim(),
+            password: hashedPassword,
+            teacherCode: teacherCode,
+            assignedClasses: []
+        });
+
+        await teacher.save();
+
+        res.status(201).json({
+            message: 'Registration successful',
+            teacher: {
+                name: teacher.name,
+                email: teacher.email,
+                teacherCode: teacher.teacherCode
+            }
+        });
+
+    } catch (err) {
+        console.error('Registration error:', err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
 // @route   POST /api/auth/teacher/login
 // @desc    Teacher Login
 router.post('/login', async (req, res) => {
