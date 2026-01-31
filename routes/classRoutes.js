@@ -59,20 +59,28 @@ router.post('/admin-login', async (req, res) => {
     try {
         const { className, adminPin } = req.body;
 
+        console.log('🔐 Admin login attempt for class:', className);
+
         const classroom = await Classroom.findOne({
             className: { $regex: new RegExp(`^${className}$`, 'i') }
         });
 
         if (!classroom) {
+            console.log('❌ Class not found:', className);
             return res.status(404).json({ error: 'Class not found' });
         }
+
+        console.log('✅ Class found:', classroom.className, '- Checking PIN...');
 
         // 3. Compare the provided PIN with the stored Hash
         const isMatch = await bcrypt.compare(adminPin, classroom.adminPin);
 
         if (!isMatch) {
+            console.log('❌ Invalid PIN for class:', className);
             return res.status(401).json({ error: 'Invalid PIN' });
         }
+
+        console.log('✅ PIN verified for class:', className);
 
         // Generate JWT Token
         const token = jwt.sign(
@@ -87,6 +95,7 @@ router.post('/admin-login', async (req, res) => {
             token
         });
     } catch (err) {
+        console.error('❌ Admin login error:', err);
         res.status(500).json({ error: 'Server Error' });
     }
 });
@@ -255,18 +264,9 @@ router.get('/lookup/:className', async (req, res) => {
     }
 });
 
-router.get('/:id', async (req, res) => {
-    try {
-        const classroom = await Classroom.findById(req.params.id);
-        if (!classroom) return res.status(404).json({ error: 'Class not found' });
-        res.json(classroom);
-    } catch (err) {
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
-
 // @route   GET /api/class/stats/all
 // @desc    Get system statistics (total classes and students)
+// NOTE: This MUST be before /:id route to avoid being caught by the dynamic route
 router.get('/stats/all', async (req, res) => {
     try {
         const totalClasses = await Classroom.countDocuments();
@@ -283,15 +283,50 @@ router.get('/stats/all', async (req, res) => {
     }
 });
 
-// @route   POST /api/class/create-teacher
-// @desc    Admin creates a teacher and assigns to a subject
-router.post('/create-teacher', auth, async (req, res) => {
+// @route   GET /api/class/teachers/list
+// @desc    Get list of all registered teachers (for dropdown selection)
+// NOTE: This MUST be before /:id route
+router.get('/teachers/list', auth, async (req, res) => {
     try {
-        const { name, email, subjectId } = req.body;
+        const Teacher = require('../models/Teacher');
+
+        // Get all teachers - only return name and id for privacy
+        const teachers = await Teacher.find({}, '_id name email');
+
+        res.json({ teachers });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// Dynamic route - MUST be after specific routes like /stats/all and /teachers/list
+router.get('/:id', async (req, res) => {
+    try {
+        const classroom = await Classroom.findById(req.params.id);
+        if (!classroom) return res.status(404).json({ error: 'Class not found' });
+        res.json(classroom);
+    } catch (err) {
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// @route   POST /api/class/assign-teacher
+// @desc    Assign a registered teacher to a subject (requires PIN verification)
+router.post('/assign-teacher', auth, async (req, res) => {
+    try {
+        const { teacherId, subjectId, teacherPin } = req.body;
+
+        // Debug: Log the token payload
+        console.log('🔑 Token payload:', req.user);
+
         const classId = req.user.classId;
 
         // Verify Admin
-        if (!classId) return res.status(403).json({ error: 'Access Denied' });
+        if (!classId) {
+            console.log('❌ No classId in token! User payload:', req.user);
+            return res.status(403).json({ error: 'Access Denied - Please login as admin' });
+        }
 
         const classroom = await Classroom.findById(classId);
         if (!classroom) return res.status(404).json({ error: 'Class not found' });
@@ -300,30 +335,20 @@ router.post('/create-teacher', auth, async (req, res) => {
         const subject = classroom.subjects.id(subjectId);
         if (!subject) return res.status(404).json({ error: 'Subject not found' });
 
-        // Check if teacher already exists by email
-        // We need to import Teacher model here or at top
-        const Teacher = require('../models/Teacher'); // Import dynamically to avoid circle if any, or just safe
-
-        let teacher = await Teacher.findOne({ email });
-        let password = Math.random().toString(36).slice(-8); // Generate random password
-        let newTeacher = false;
+        // Find teacher and verify PIN
+        const Teacher = require('../models/Teacher');
+        const teacher = await Teacher.findById(teacherId);
 
         if (!teacher) {
-            newTeacher = true;
-            const salt = await bcrypt.genSalt(10);
-            const hashedPassword = await bcrypt.hash(password, salt);
-            const teacherCode = Math.floor(1000 + Math.random() * 9000).toString(); // 4 digit code
-
-            teacher = new Teacher({
-                name,
-                email,
-                password: hashedPassword,
-                teacherCode,
-                assignedClasses: []
-            });
+            return res.status(404).json({ error: 'Teacher not found' });
         }
 
-        // Check if already assigned
+        // Verify the PIN
+        if (teacher.teacherCode !== teacherPin) {
+            return res.status(401).json({ error: 'Invalid PIN. Please ask the teacher to enter their secret code.' });
+        }
+
+        // Check if already assigned to this subject
         const isAssigned = teacher.assignedClasses.some(
             a => a.classId.toString() === classId && a.subjectId.toString() === subjectId
         );
@@ -335,18 +360,61 @@ router.post('/create-teacher', auth, async (req, res) => {
 
         // Link teacher to subject in Classroom
         subject.teacherId = teacher._id;
-        subject.teacherStatus = 'Pending';
+        subject.teacherName = teacher.name;
+        subject.teacherStatus = 'Verified'; // Now verified since PIN was correct
         await classroom.save();
 
         res.json({
-            message: 'Teacher Assigned! They must accept the request in their dashboard.',
+            message: 'Teacher verified and assigned successfully!',
             teacher: {
                 name: teacher.name,
-                email: teacher.email,
-                teacherCode: teacher.teacherCode
-                // Password NOT returned for security
+                email: teacher.email
+            },
+            subject: {
+                name: subject.name
             }
         });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// @route   DELETE /api/class/unassign-teacher/:subjectId
+// @desc    Remove teacher assignment from a subject
+router.delete('/unassign-teacher/:subjectId', auth, async (req, res) => {
+    try {
+        const { subjectId } = req.params;
+        const classId = req.user.classId;
+
+        if (!classId) return res.status(403).json({ error: 'Access Denied' });
+
+        const classroom = await Classroom.findById(classId);
+        if (!classroom) return res.status(404).json({ error: 'Class not found' });
+
+        const subject = classroom.subjects.id(subjectId);
+        if (!subject) return res.status(404).json({ error: 'Subject not found' });
+
+        // Remove teacher assignment from Teacher model
+        if (subject.teacherId) {
+            const Teacher = require('../models/Teacher');
+            const teacher = await Teacher.findById(subject.teacherId);
+            if (teacher) {
+                teacher.assignedClasses = teacher.assignedClasses.filter(
+                    a => !(a.classId.toString() === classId && a.subjectId.toString() === subjectId)
+                );
+                await teacher.save();
+            }
+        }
+
+        // Clear teacher from subject
+        subject.teacherId = undefined;
+        subject.teacherName = undefined;
+        subject.teacherStatus = undefined;
+        await classroom.save();
+
+        res.json({ message: 'Teacher unassigned successfully' });
 
     } catch (err) {
         console.error(err);

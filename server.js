@@ -10,7 +10,6 @@ require('dotenv').config(); // MUST be at the top
 const classRoutes = require('./routes/classRoutes');
 const attendanceRoutes = require('./routes/attendanceRoutes');
 const studentRoutes = require('./routes/studentRoutes');
-const specialDateRoutes = require('./routes/specialDateRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 
 const app = express();
@@ -65,7 +64,6 @@ app.use('/api/class', classRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/student', studentRoutes);
 app.use('/api/teacher', require('./routes/teacherRoutes')); // Add Teacher Routes
-app.use('/api/special-dates', specialDateRoutes);
 app.use('/api/reports', reportRoutes);
 
 app.get('/', (req, res) => {

@@ -94,15 +94,24 @@ router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        const teacher = await Teacher.findOne({ email });
+        // Normalize email to lowercase (emails are stored as lowercase)
+        const normalizedEmail = email?.toLowerCase().trim();
+
+        const teacher = await Teacher.findOne({ email: normalizedEmail });
         if (!teacher) {
+            console.log('❌ Teacher login failed - email not found:', normalizedEmail);
             return res.status(400).json({ error: 'Invalid Credentials' });
         }
 
+        console.log('✅ Teacher found:', teacher.name, '- Checking password...');
+
         const isMatch = await bcrypt.compare(password, teacher.password);
         if (!isMatch) {
+            console.log('❌ Teacher login failed - password mismatch for:', normalizedEmail);
             return res.status(400).json({ error: 'Invalid Credentials' });
         }
+
+        console.log('✅ Teacher login successful:', teacher.name);
 
         const payload = {
             teacherId: teacher._id,
@@ -333,5 +342,7 @@ router.post('/change-password', auth, async (req, res) => {
         res.status(500).json({ error: 'Server Error' });
     }
 });
+
+
 
 module.exports = router;

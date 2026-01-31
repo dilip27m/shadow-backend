@@ -15,8 +15,9 @@ const ClassroomSchema = new mongoose.Schema({
         name: { type: String, required: true },
         code: { type: String },
         totalClassesExpected: { type: Number, default: 40 },
-        teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher', default: null }, // Link subject to a teacher
-        teacherStatus: { type: String, enum: ['Pending', 'Accepted'], default: 'Pending' }
+        teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher', default: null },
+        teacherName: { type: String, default: null },
+        teacherStatus: { type: String, enum: ['Pending', 'Accepted', 'Verified'], default: null }
     }],
 
     timetable: {

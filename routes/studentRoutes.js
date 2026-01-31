@@ -294,7 +294,7 @@ router.post('/request', async (req, res) => {
             date, // Ensure frontend sends ISO string or YYYY-MM-DD
             reason,
             status: 'Pending',
-            requestedBy: 'Student' // or could be 'System'
+            requestedBy: studentId // Use roll number, not string 'Student'
         });
 
         await newRequest.save();
