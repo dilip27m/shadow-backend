@@ -54,30 +54,15 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
             const stat = statsMap[subject._id.toString()] || { totalClasses: 0, attendedClasses: 0 };
             const { totalClasses, attendedClasses } = stat;
 
-            const percentage = totalClasses === 0 ? 0 : ((attendedClasses / totalClasses) * 100).toFixed(1);
-            const floatPercentage = parseFloat(percentage);
-
-            let bunkMsg = "";
-            const minPercentage = classroom.settings?.minAttendancePercentage || 75;
-
-            if (floatPercentage >= minPercentage + 5) { // Safe buffer
-                const canBunk = Math.floor((attendedClasses / (minPercentage / 100)) - totalClasses);
-                bunkMsg = `Safe! You can bunk ${Math.max(0, canBunk)} more classes.`;
-            } else if (floatPercentage < minPercentage) {
-                const mustAttend = Math.ceil(((minPercentage / 100) * totalClasses - attendedClasses) / (1 - (minPercentage / 100)));
-                bunkMsg = `Danger! Attend next ${Math.max(1, mustAttend)} classes to recover.`;
-            } else {
-                bunkMsg = "Borderline! Be careful.";
-            }
+            const percentage = totalClasses === 0 ? 0 : parseFloat(((attendedClasses / totalClasses) * 100).toFixed(1));
 
             return {
                 _id: subject._id,
                 subjectName: subject.name, // Frontend expects 'subjectName'
                 code: subject.code,
-                percentage: floatPercentage,
+                percentage,
                 attended: attendedClasses,
-                total: totalClasses,
-                message: bunkMsg
+                total: totalClasses
             };
         });
 
@@ -94,91 +79,6 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
     }
 });
 
-// Simulate bunk impact
-router.post('/simulate-bunk', async (req, res) => {
-    try {
-        const { classId, rollNumber, dates } = req.body;
-        const rollNo = parseInt(rollNumber);
-
-        const classroom = await Classroom.findById(classId);
-        if (!classroom) return res.status(404).json({ error: 'Class not found' });
-
-        // NOTE: For consistency, you should also apply aggregation here if this endpoint gets slow,
-        // but since we need granular control for simulation, we'll keep logic similar but ensure we optimize queries later if needed.
-        // For now, the bottleneck is primarily on the main dashboard load.
-
-        const allRecords = await Attendance.find({ classId });
-
-        // 1. Calculate Current Status (Standard Loop - could be replaced by aggregation for speed)
-        let currentStats = {};
-        classroom.subjects.forEach(sub => {
-            currentStats[sub._id.toString()] = {
-                subjectName: sub.name,
-                totalClasses: 0,
-                attendedClasses: 0
-            };
-        });
-
-        allRecords.forEach(day => {
-            day.periods.forEach(p => {
-                const subId = p.subjectId.toString();
-                if (currentStats[subId]) {
-                    currentStats[subId].totalClasses += 1;
-                    if (!p.absentRollNumbers.includes(rollNo)) {
-                        currentStats[subId].attendedClasses += 1;
-                    }
-                }
-            });
-        });
-
-        // 2. Calculate Impact
-        const impacts = [];
-        const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-        for (const [subjectId, stat] of Object.entries(currentStats)) {
-
-            let classesOnSelectedDates = 0;
-
-            dates.forEach(date => {
-                const d = new Date(date);
-                const dayOfWeek = days[d.getDay()];
-                const daySchedule = classroom.timetable?.[dayOfWeek] || [];
-
-                const hasClass = daySchedule.some(slot => String(slot.subjectId) === String(subjectId));
-
-                if (hasClass) classesOnSelectedDates++;
-            });
-
-            const currentPercentage = stat.totalClasses === 0
-                ? 100
-                : (stat.attendedClasses / stat.totalClasses) * 100;
-
-            const afterTotal = stat.totalClasses + classesOnSelectedDates;
-            const afterAttended = stat.attendedClasses;
-
-            const afterPercentage = afterTotal === 0
-                ? 100
-                : (afterAttended / afterTotal) * 100;
-
-            impacts.push({
-                subjectName: stat.subjectName,
-                currentPercentage: parseFloat(currentPercentage.toFixed(1)),
-                currentAttended: stat.attendedClasses,
-                currentTotal: stat.totalClasses,
-                afterPercentage: parseFloat(afterPercentage.toFixed(1)),
-                afterAttended: afterAttended,
-                afterTotal: afterTotal,
-                classesOnSelectedDates: classesOnSelectedDates
-            });
-        }
-
-        res.json({ impacts });
-
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
 
 router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
     try {

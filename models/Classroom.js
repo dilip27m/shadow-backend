@@ -2,11 +2,10 @@ const mongoose = require('mongoose');
 
 const ClassroomSchema = new mongoose.Schema({
     // FIX: Add unique: true and trim whitespace
-    className: { 
-        type: String, 
-        required: true, 
-        unique: true, 
-        trim: true 
+    className: {
+        type: String,
+        required: true,
+        trim: true
     },
     adminPin: { type: String, required: true },
     totalStudents: { type: Number, required: true },
@@ -17,21 +16,10 @@ const ClassroomSchema = new mongoose.Schema({
         totalClassesExpected: { type: Number, default: 40 }
     }],
 
-    timetable: {
-        Monday: [{ period: Number, subjectId: String }],
-        Tuesday: [{ period: Number, subjectId: String }],
-        Wednesday: [{ period: Number, subjectId: String }],
-        Thursday: [{ period: Number, subjectId: String }],
-        Friday: [{ period: Number, subjectId: String }],
-        Saturday: [{ period: Number, subjectId: String }]
-    },
-
-    settings: {
-        minAttendancePercentage: { type: Number, default: 75 },
-        permanentAbsentees: [{ type: Number }]
-    },
-
     createdAt: { type: Date, default: Date.now }
 });
+
+// Case-insensitive unique index: "CSE B", "cse b", "Cse B" are all treated as the same class
+ClassroomSchema.index({ className: 1 }, { unique: true, collation: { locale: 'en', strength: 2 } });
 
 module.exports = mongoose.model('Classroom', ClassroomSchema);

@@ -19,21 +19,19 @@ router.get('/:classId', async (req, res) => {
 // Create new announcement (Protected - admin only)
 router.post('/', auth, async (req, res) => {
     try {
-        const { classId, type, title, description, subjectId, subjectName, dueDate, priority } = req.body;
+        const { classId, title, description, subjectId, subjectName, dueDate } = req.body;
 
-        if (!classId || !type || !title) {
-            return res.status(400).json({ error: 'classId, type, and title are required' });
+        if (!classId || !title) {
+            return res.status(400).json({ error: 'classId and title are required' });
         }
 
         const announcement = new Announcement({
             classId,
-            type,
             title: title.trim(),
             description: (description || '').trim(),
             subjectId: subjectId || null,
             subjectName: subjectName || 'General',
-            dueDate: dueDate || null,
-            priority: priority || 'normal'
+            dueDate: dueDate || null
         });
 
         await announcement.save();
@@ -47,19 +45,17 @@ router.post('/', auth, async (req, res) => {
 // Update announcement (Protected - admin only)
 router.patch('/:id', auth, async (req, res) => {
     try {
-        const { type, title, description, subjectId, subjectName, dueDate, priority } = req.body;
+        const { title, description, subjectId, subjectName, dueDate } = req.body;
 
         const announcement = await Announcement.findById(req.params.id);
         if (!announcement) return res.status(404).json({ error: 'Announcement not found' });
 
         // Update fields
-        if (type) announcement.type = type;
         if (title) announcement.title = title.trim();
         if (description !== undefined) announcement.description = (description || '').trim();
         if (subjectId !== undefined) announcement.subjectId = subjectId || null;
         if (subjectName !== undefined) announcement.subjectName = subjectName || 'General';
         if (dueDate !== undefined) announcement.dueDate = dueDate || null;
-        if (priority) announcement.priority = priority;
 
         await announcement.save();
         res.json(announcement);

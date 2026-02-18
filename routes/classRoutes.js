@@ -5,14 +5,25 @@ const bcrypt = require('bcryptjs'); // Import bcrypt for security
 const Classroom = require('../models/Classroom');
 const auth = require('../middleware/auth');
 
+// Helper: Escape special regex characters from user input
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // @route   POST /api/class/create
 // @desc    Create a new Classroom (Protected)
 router.post('/create', async (req, res) => {
     try {
-        const { className, adminPin, totalStudents, subjects, timetable } = req.body;
+        const { className, adminPin, totalStudents, subjects } = req.body;
 
         if (!className || !adminPin || !totalStudents) {
             return res.status(400).json({ error: 'Please provide all required fields' });
+        }
+
+        // Check for case-insensitive duplicate: "CSE B", "cse b", "Cse B" → same class
+        const existing = await Classroom.findOne({
+            className: { $regex: new RegExp(`^${escapeRegex(className.trim())}$`, 'i') }
+        });
+        if (existing) {
+            return res.status(400).json({ error: 'Class Name already exists! Please choose another.' });
         }
 
         // 1. Hash the PIN before saving
@@ -23,8 +34,7 @@ router.post('/create', async (req, res) => {
             className,
             adminPin: hashedPin, // Store the hash, not the plain text
             totalStudents,
-            subjects,
-            timetable
+            subjects
         });
 
         const savedClass = await newClass.save();
@@ -52,9 +62,6 @@ router.post('/create', async (req, res) => {
         res.status(500).json({ error: 'Server Error' });
     }
 });
-
-// Helper: Escape special regex characters from user input
-const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // @route   POST /api/class/admin-login
 // @desc    Verify Admin PIN and Return Token
@@ -88,6 +95,34 @@ router.post('/admin-login', async (req, res) => {
             message: 'Login successful',
             classId: classroom._id,
             token
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// @route   POST /api/class/verify-token
+// @desc    Verify existing token and issue a fresh one (auto-renewal)
+router.post('/verify-token', auth, async (req, res) => {
+    try {
+        // Token is already verified by auth middleware, req.user has { classId }
+        const classroom = await Classroom.findById(req.user.classId).select('className');
+        if (!classroom) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        // Issue a fresh 30-day token
+        const newToken = jwt.sign(
+            { classId: classroom._id },
+            process.env.JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        res.json({
+            valid: true,
+            classId: classroom._id,
+            className: classroom.className,
+            token: newToken
         });
     } catch (err) {
         res.status(500).json({ error: 'Server Error' });
@@ -188,58 +223,6 @@ router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
 });
 
 
-// @route   PUT /api/class/update-timetable
-// @desc    Update the Weekly Timetable (Protected)
-router.put('/update-timetable', auth, async (req, res) => {
-    try {
-        const { classId, timetable } = req.body;
-
-        if (req.user.classId !== classId) {
-            return res.status(403).json({ error: 'Unauthorized action' });
-        }
-
-        const classroom = await Classroom.findById(classId);
-        if (!classroom) return res.status(404).json({ error: 'Class not found' });
-
-        await Classroom.findByIdAndUpdate(classId, { timetable });
-
-        res.json({ message: "Timetable Updated Successfully! 🗓️" });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
-
-// @route   PUT /api/class/update-settings
-// @desc    Update class settings (Protected)
-router.put('/update-settings', auth, async (req, res) => {
-    try {
-        const { classId, settings, totalStudents } = req.body;
-
-        if (req.user.classId !== classId) {
-            return res.status(403).json({ error: 'Unauthorized action' });
-        }
-
-        const updateData = { settings };
-        if (totalStudents !== undefined) {
-            updateData.totalStudents = totalStudents;
-        }
-
-        const classroom = await Classroom.findByIdAndUpdate(
-            classId,
-            updateData,
-            { new: true }
-        );
-
-        if (!classroom) {
-            return res.status(404).json({ error: 'Class not found' });
-        }
-
-        res.json({ message: 'Settings updated successfully', classroom });
-    } catch (err) {
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
 
 // --- Public Routes (No Auth Needed) ---
 

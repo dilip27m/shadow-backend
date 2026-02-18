@@ -2,17 +2,11 @@ const mongoose = require('mongoose');
 
 const AnnouncementSchema = new mongoose.Schema({
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Classroom', required: true },
-    type: {
-        type: String,
-        enum: ['deadline', 'exam', 'assignment', 'update'],
-        required: true
-    },
     title: { type: String, required: true, trim: true },
     description: { type: String, trim: true, default: '' },
     subjectId: { type: String, default: null },
     subjectName: { type: String, default: 'General' },
-    dueDate: { type: Date, default: null },
-    priority: { type: String, enum: ['normal', 'urgent'], default: 'normal' }
+    dueDate: { type: Date, default: null }
 }, { timestamps: true });
 
 // Index for efficient querying  
