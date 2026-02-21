@@ -19,9 +19,8 @@ router.post('/create', async (req, res) => {
         }
 
         // Check for case-insensitive duplicate: "CSE B", "cse b", "Cse B" → same class
-        const existing = await Classroom.findOne({
-            className: { $regex: new RegExp(`^${escapeRegex(className.trim())}$`, 'i') }
-        }).select('_id').lean();
+        const _className = className.trim();
+        const existing = await Classroom.findOne({ className: _className }).collation({ locale: 'en', strength: 2 }).select('_id').lean();
         if (existing) {
             return res.status(400).json({ error: 'Class Name already exists! Please choose another.' });
         }
@@ -69,9 +68,7 @@ router.post('/admin-login', async (req, res) => {
     try {
         const { className, adminPin } = req.body;
 
-        const classroom = await Classroom.findOne({
-            className: { $regex: new RegExp(`^${escapeRegex(className)}$`, 'i') }
-        }).select('_id adminPin').lean();
+        const classroom = await Classroom.findOne({ className }).collation({ locale: 'en', strength: 2 }).select('_id adminPin className').lean();
 
         if (!classroom) {
             return res.status(404).json({ error: 'Class not found' });
@@ -246,9 +243,8 @@ router.get('/stats/all', async (req, res) => {
 
 router.get('/lookup/:className', async (req, res) => {
     try {
-        const classroom = await Classroom.findOne({
-            className: { $regex: new RegExp(`^${escapeRegex(req.params.className)}$`, 'i') }
-        }).select('_id className').lean();
+        const className = req.params.className;
+        const classroom = await Classroom.findOne({ className }).collation({ locale: 'en', strength: 2 }).select('_id className').lean();
 
         if (!classroom) {
             return res.status(404).json({ error: 'Class not found' });

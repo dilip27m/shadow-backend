@@ -96,10 +96,7 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
 
 
         // Find the most recent attendance record for this date
-        const attendanceRecord = await Attendance.findOne({
-            classId,
-            date: queryDate
-        }).sort({ updatedAt: -1 }).select('periods').lean();
+        const attendanceRecord = await Attendance.findOne({ classId, date: queryDate }).sort({ updatedAt: -1 }).select('periods').lean();
 
 
 

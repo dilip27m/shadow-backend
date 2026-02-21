@@ -8,7 +8,7 @@ router.get('/:classId', async (req, res) => {
     try {
         const announcements = await Announcement.find({ classId: req.params.classId })
             .sort({ createdAt: -1 })
-            .limit(100);
+            .limit(100).lean();
         res.json({ announcements });
     } catch (err) {
         console.error(err);

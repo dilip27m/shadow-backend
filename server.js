@@ -71,13 +71,8 @@ app.use((req, res, next) => {
 const connectDB = async () => {
     try {
         const conn = await mongoose.connect(process.env.MONGO_URI, {
-            // Performance: reuse connections, set timeouts avoiding Atlas IP bans
-            maxPoolSize: 10,
-            minPoolSize: 1,
-            serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 45000,
-            connectTimeoutMS: 10000,
-            family: 4 // Force IPv4 to prevent lookup delays
+            maxPoolSize: 10, // Recommended for free tier
+            serverSelectionTimeoutMS: 5000
         });
         console.log(`MongoDB Connected: ${conn.connection.host}`);
     } catch (error) {

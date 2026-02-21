@@ -6,7 +6,8 @@ const ClassroomSchema = new mongoose.Schema({
         type: String,
         required: true,
         trim: true,
-        index: true
+        index: true,
+        unique: true
     },
     adminPin: { type: String, required: true },
     totalStudents: { type: Number, required: true },

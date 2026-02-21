@@ -43,7 +43,7 @@ router.get('/by-date/:classId/:date', async (req, res) => {
         const { classId, date } = req.params;
         const searchDate = normalizeDate(date);
 
-        const record = await Attendance.findOne({ classId, date: searchDate });
+        const record = await Attendance.findOne({ classId, date: searchDate }).lean();
 
         if (!record) {
             return res.json({ periods: [] });
@@ -60,7 +60,7 @@ router.get('/by-date/:classId/:date', async (req, res) => {
 router.get('/dates/:classId', async (req, res) => {
     try {
         const { classId } = req.params;
-        const records = await Attendance.find({ classId }).select('date -_id').sort({ date: -1 });
+        const records = await Attendance.find({ classId }).select('date -_id').sort({ date: -1 }).lean();
 
         const dates = records.map(r => r.date);
         res.json({ dates });

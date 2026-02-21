@@ -65,7 +65,7 @@ router.get('/class/:classId', auth, async (req, res) => {
             return res.status(400).json({ error: 'Invalid Class ID' });
         }
 
-        const reports = await Report.find({ classId }).sort({ createdAt: -1 });
+        const reports = await Report.find({ classId }).sort({ createdAt: -1 }).lean();
         res.json({ reports });
     } catch (err) {
         console.error('Error fetching class reports:', err);
@@ -81,7 +81,7 @@ router.get('/:classId/:rollNumber', async (req, res) => {
         const reports = await Report.find({
             classId,
             studentRoll: parseInt(rollNumber)
-        }).sort({ createdAt: -1 }); // Most recent first
+        }).sort({ createdAt: -1 }).lean(); // Most recent first
 
         res.json({ reports });
     } catch (err) {
