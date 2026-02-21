@@ -42,7 +42,7 @@ if (process.env.NODE_ENV !== 'test') {
 app.use(compression());
 
 // ─── Body Parser ───
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '1mb' }));
 
 // ─── Rate Limiting ───
 const limiter = rateLimit({
@@ -58,9 +58,12 @@ app.use('/api/', limiter);
 // ─── Response Caching Headers ───
 // Force no-cache for all API responses to ensure real-time updates
 app.use((req, res, next) => {
-    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.set('Pragma', 'no-cache');
-    res.set('Expires', '0');
+    if (req.method === 'GET') {
+        // Allow short-term caching (e.g., 1 minute) for student reports
+        res.set('Cache-Control', 'public, max-age=60');
+    } else {
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    }
     next();
 });
 
@@ -107,8 +110,7 @@ app.use((err, req, res, next) => {
     });
 });
 
-const PORT = process.env.PORT || 5001;
-
-app.listen(PORT, () => {
+const PORT = process.env.PORT || 5001; 
+app.listen(PORT, '0.0.0.0', () => { // Binding to 0.0.0.0 is best for cloud deploys
     console.log(`Server running on port ${PORT}`);
 });
