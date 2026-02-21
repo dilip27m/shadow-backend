@@ -68,7 +68,9 @@ router.post('/admin-login', async (req, res) => {
     try {
         const { className, adminPin } = req.body;
 
-        const classroom = await Classroom.findOne({ className }).collation({ locale: 'en', strength: 2 }).select('_id adminPin className').lean();
+        const classroom = await Classroom.findOne({ className })
+            .select('className adminPin')
+            .lean();
 
         if (!classroom) {
             return res.status(404).json({ error: 'Class not found' });

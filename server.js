@@ -71,10 +71,11 @@ app.use((req, res, next) => {
 const connectDB = async () => {
     try {
         const conn = await mongoose.connect(process.env.MONGO_URI, {
-            maxPoolSize: 10, // Recommended for free tier
-            serverSelectionTimeoutMS: 5000
+            maxPoolSize: 10, // Limit to 10 to stay within Free Tier limits
+            serverSelectionTimeoutMS: 5000,
+            socketTimeoutMS: 45000,
         });
-        console.log(`MongoDB Connected: ${conn.connection.host}`);
+        console.log('MongoDB Connected (Pool Limited to 10)');
     } catch (error) {
         console.error(`Error: ${error.message}`);
         process.exit(1);
