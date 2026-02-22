@@ -7,7 +7,7 @@ const ReportSchema = new mongoose.Schema({
         required: true
     },
     studentRoll: {
-        type: Number,
+        type: String,
         required: true
     },
     date: {
@@ -37,5 +37,10 @@ const ReportSchema = new mongoose.Schema({
         maxlength: 500
     }
 }, { timestamps: true });
+
+// Indexes for fast queries
+ReportSchema.index({ classId: 1, status: 1 });
+ReportSchema.index({ classId: 1, studentRoll: 1 });
+ReportSchema.index({ classId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Report', ReportSchema);

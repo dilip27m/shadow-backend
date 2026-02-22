@@ -3,10 +3,10 @@ const router = express.Router();
 const Attendance = require('../models/Attendance');
 const auth = require('../middleware/auth');
 
-// FIX: Force UTC Midnight to avoid timezone shifts
+// FIX: Extract date string directly to avoid timezone-driven day shifts
 const normalizeDate = (dateString) => {
-    // Ensure we only take the YYYY-MM-DD part and force UTC
-    const datePart = new Date(dateString).toISOString().split('T')[0];
+    // Take only the YYYY-MM-DD part before any 'T' character, avoiding UTC conversion
+    const datePart = String(dateString).split('T')[0];
     return new Date(`${datePart}T00:00:00.000Z`);
 };
 
@@ -16,6 +16,7 @@ const Teacher = require('../models/Teacher');
 // @route   POST /api/attendance/mark
 router.post('/mark', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { classId, date, periods } = req.body;
 
         if (!classId || !date || !periods) {
@@ -28,6 +29,7 @@ router.post('/mark', auth, async (req, res) => {
         }
 
         const searchDate = normalizeDate(date);
+        const normalizedPeriods = normalizePeriodsForStorage(periods);
 
         // Fetch existing record to check for previous verifications
         const existingRecord = await Attendance.findOne({ classId, date: searchDate });
@@ -98,12 +100,14 @@ router.post('/mark', auth, async (req, res) => {
 });
 
 // @route   GET /api/attendance/by-date/:classId/:date
+// @access  Public — intentionally unauthenticated so students can view attendance
+//          Students do not have auth tokens; they access via classId + rollNumber
 router.get('/by-date/:classId/:date', async (req, res) => {
     try {
         const { classId, date } = req.params;
         const searchDate = normalizeDate(date);
 
-        const record = await Attendance.findOne({ classId, date: searchDate });
+        const record = await Attendance.findOne({ classId, date: searchDate }).lean();
 
         if (!record) {
             return res.json({ periods: [] });
@@ -116,10 +120,11 @@ router.get('/by-date/:classId/:date', async (req, res) => {
 });
 
 // @route   GET /api/attendance/dates/:classId
+// @access  Public — students use this to populate the calendar view
 router.get('/dates/:classId', async (req, res) => {
     try {
         const { classId } = req.params;
-        const records = await Attendance.find({ classId }).select('date -_id').sort({ date: -1 });
+        const records = await Attendance.find({ classId }).select('date -_id').sort({ date: -1 }).lean();
 
         const dates = records.map(r => r.date);
         res.json({ dates });

@@ -13,10 +13,12 @@ const AttendanceSchema = new mongoose.Schema({
         isVerified: { type: Boolean, default: false },
         verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher' },
 
-        absentRollNumbers: [{ type: Number }]
+        absentRollNumbers: [{ type: String }]
     }]
 }, { timestamps: true }); // Add timestamps for createdAt and updatedAt
 
 AttendanceSchema.index({ classId: 1, date: 1 }, { unique: true });
+AttendanceSchema.index({ classId: 1, updatedAt: -1 });
+AttendanceSchema.index({ classId: 1, 'periods.subjectId': 1, date: -1 });
 
 module.exports = mongoose.model('Attendance', AttendanceSchema);

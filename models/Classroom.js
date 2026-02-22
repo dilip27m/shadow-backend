@@ -9,7 +9,14 @@ const ClassroomSchema = new mongoose.Schema({
         trim: true
     },
     adminPin: { type: String, required: true },
-    totalStudents: { type: Number, required: true },
+    rollNumbers: {
+        type: [String],
+        required: true,
+        validate: {
+            validator: (value) => Array.isArray(value) && value.length > 0,
+            message: 'At least one roll number is required'
+        }
+    },
 
     subjects: [{
         name: { type: String, required: true },
@@ -20,21 +27,13 @@ const ClassroomSchema = new mongoose.Schema({
         teacherStatus: { type: String, enum: ['Pending', 'Accepted', 'Verified'], default: null }
     }],
 
-    timetable: {
-        Monday: [{ period: Number, subjectId: String }],
-        Tuesday: [{ period: Number, subjectId: String }],
-        Wednesday: [{ period: Number, subjectId: String }],
-        Thursday: [{ period: Number, subjectId: String }],
-        Friday: [{ period: Number, subjectId: String }],
-        Saturday: [{ period: Number, subjectId: String }]
-    },
-
-    settings: {
-        minAttendancePercentage: { type: Number, default: 75 },
-        permanentAbsentees: [{ type: Number }]
-    },
-
     createdAt: { type: Date, default: Date.now }
 });
+
+// Case-insensitive unique index: "CSE B", "cse b", "Cse B" are all treated as the same class
+ClassroomSchema.index(
+    { className: 1 },
+    { name: 'className_ci_unique', unique: true, collation: { locale: 'en', strength: 2 } }
+);
 
 module.exports = mongoose.model('Classroom', ClassroomSchema);

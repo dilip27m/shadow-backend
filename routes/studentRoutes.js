@@ -1,25 +1,109 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose'); // Required for ObjectId casting
+const jwt = require('jsonwebtoken');
 const Classroom = require('../models/Classroom');
 const Attendance = require('../models/Attendance');
+
+const sanitizeRollNumber = (value) => {
+    if (value === undefined || value === null) return null;
+    const cleaned = String(value).trim();
+    return cleaned || null;
+};
+
+const getClassRollNumbers = (classroom) => {
+    if (Array.isArray(classroom?.rollNumbers) && classroom.rollNumbers.length > 0) {
+        return classroom.rollNumbers
+            .map((roll) => sanitizeRollNumber(roll))
+            .filter(Boolean);
+    }
+
+    // Legacy fallback for old class documents that only have totalStudents.
+    const totalStudents = Number(classroom?.totalStudents);
+    if (Number.isInteger(totalStudents) && totalStudents > 0) {
+        return Array.from({ length: totalStudents }, (_, index) => String(index + 1));
+    }
+
+    return [];
+};
+
+const isRollAbsent = (absentRollNumbers, rollNumber) => {
+    if (!Array.isArray(absentRollNumbers)) return false;
+    return absentRollNumbers.some((roll) => sanitizeRollNumber(roll) === rollNumber);
+};
+
+// Issue student access token after validating class + roll membership
+router.post('/access', async (req, res) => {
+    try {
+        const className = String(req.body?.className || '').trim();
+        const rollNumber = sanitizeRollNumber(req.body?.rollNumber);
+
+        if (!className || !rollNumber) {
+            return res.status(400).json({ error: 'className and rollNumber are required' });
+        }
+
+        const classroom = await Classroom.findOne({ className })
+            .collation({ locale: 'en', strength: 2 })
+            .select('_id className rollNumbers totalStudents')
+            .lean();
+
+        if (!classroom) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        const classRollNumbers = getClassRollNumbers(classroom);
+        if (!classRollNumbers.includes(rollNumber)) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+
+        const token = jwt.sign(
+            { classId: classroom._id.toString(), rollNumber, role: 'student' },
+            process.env.JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        res.json({
+            classId: classroom._id,
+            className: classroom.className,
+            rollNumber,
+            token
+        });
+    } catch (err) {
+        console.error('Student access error:', err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
 
 // Get overall attendance report
 router.get('/report/:classId/:rollNumber', async (req, res) => {
     try {
         const { classId, rollNumber } = req.params;
-        const rollNo = parseInt(rollNumber);
+        const rollNo = sanitizeRollNumber(rollNumber);
 
         if (!mongoose.Types.ObjectId.isValid(classId)) {
             return res.status(400).json({ error: 'Invalid Class ID' });
         }
 
-        const classroom = await Classroom.findById(classId);
+        if (rollNo === null) {
+            return res.status(400).json({ error: 'Invalid Roll Number' });
+        }
+
+        const classroom = await Classroom.findById(classId).select('className subjects rollNumbers totalStudents').lean();
         if (!classroom) return res.status(404).json({ error: 'Class not found' });
 
+        const classRollNumbers = getClassRollNumbers(classroom);
+        if (!classRollNumbers.includes(rollNo)) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+
         // 🚀 OPTIMIZATION: Use Aggregation instead of fetching all records
-        const latestAttendance = await Attendance.findOne({ classId }).sort({ updatedAt: -1 }).select('updatedAt');
+        const latestAttendance = await Attendance.findOne({ classId }).sort({ updatedAt: -1 }).select('updatedAt').lean();
         const lastUpdated = latestAttendance ? latestAttendance.updatedAt : null;
+
+        const absentChecks = [{ $in: [rollNo, "$periods.absentRollNumbers"] }];
+        if (/^\d+$/.test(rollNo)) {
+            absentChecks.push({ $in: [Number(rollNo), "$periods.absentRollNumbers"] });
+        }
 
         const stats = await Attendance.aggregate([
             {
@@ -35,7 +119,7 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
                     attendedClasses: {
                         $sum: {
                             // If rollNo is in absent list, add 0, else add 1
-                            $cond: [{ $in: [rollNo, "$periods.absentRollNumbers"] }, 0, 1]
+                            $cond: [{ $or: absentChecks }, 0, 1]
                         }
                     }
                 }
@@ -54,30 +138,15 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
             const stat = statsMap[subject._id.toString()] || { totalClasses: 0, attendedClasses: 0 };
             const { totalClasses, attendedClasses } = stat;
 
-            const percentage = totalClasses === 0 ? 0 : ((attendedClasses / totalClasses) * 100).toFixed(1);
-            const floatPercentage = parseFloat(percentage);
-
-            let bunkMsg = "";
-            const minPercentage = classroom.settings?.minAttendancePercentage || 75;
-
-            if (floatPercentage >= minPercentage + 5) { // Safe buffer
-                const canBunk = Math.floor((attendedClasses / (minPercentage / 100)) - totalClasses);
-                bunkMsg = `Safe! You can bunk ${Math.max(0, canBunk)} more classes.`;
-            } else if (floatPercentage < minPercentage) {
-                const mustAttend = Math.ceil(((minPercentage / 100) * totalClasses - attendedClasses) / (1 - (minPercentage / 100)));
-                bunkMsg = `Danger! Attend next ${Math.max(1, mustAttend)} classes to recover.`;
-            } else {
-                bunkMsg = "Borderline! Be careful.";
-            }
+            const percentage = totalClasses === 0 ? 0 : parseFloat(((attendedClasses / totalClasses) * 100).toFixed(1));
 
             return {
                 _id: subject._id,
                 subjectName: subject.name, // Frontend expects 'subjectName'
                 code: subject.code,
-                percentage: floatPercentage,
+                percentage,
                 attended: attendedClasses,
-                total: totalClasses,
-                message: bunkMsg
+                total: totalClasses
             };
         });
 
@@ -94,96 +163,27 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
     }
 });
 
-// Simulate bunk impact
-router.post('/simulate-bunk', async (req, res) => {
-    try {
-        const { classId, rollNumber, dates } = req.body;
-        const rollNo = parseInt(rollNumber);
-
-        const classroom = await Classroom.findById(classId);
-        if (!classroom) return res.status(404).json({ error: 'Class not found' });
-
-        // NOTE: For consistency, you should also apply aggregation here if this endpoint gets slow,
-        // but since we need granular control for simulation, we'll keep logic similar but ensure we optimize queries later if needed.
-        // For now, the bottleneck is primarily on the main dashboard load.
-
-        const allRecords = await Attendance.find({ classId });
-
-        // 1. Calculate Current Status (Standard Loop - could be replaced by aggregation for speed)
-        let currentStats = {};
-        classroom.subjects.forEach(sub => {
-            currentStats[sub._id.toString()] = {
-                subjectName: sub.name,
-                totalClasses: 0,
-                attendedClasses: 0
-            };
-        });
-
-        allRecords.forEach(day => {
-            day.periods.forEach(p => {
-                const subId = p.subjectId.toString();
-                if (currentStats[subId]) {
-                    currentStats[subId].totalClasses += 1;
-                    if (!p.absentRollNumbers.includes(rollNo)) {
-                        currentStats[subId].attendedClasses += 1;
-                    }
-                }
-            });
-        });
-
-        // 2. Calculate Impact
-        const impacts = [];
-        const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-        for (const [subjectId, stat] of Object.entries(currentStats)) {
-
-            let classesOnSelectedDates = 0;
-
-            dates.forEach(date => {
-                const d = new Date(date);
-                const dayOfWeek = days[d.getDay()];
-                const daySchedule = classroom.timetable?.[dayOfWeek] || [];
-
-                const hasClass = daySchedule.some(slot => String(slot.subjectId) === String(subjectId));
-
-                if (hasClass) classesOnSelectedDates++;
-            });
-
-            const currentPercentage = stat.totalClasses === 0
-                ? 100
-                : (stat.attendedClasses / stat.totalClasses) * 100;
-
-            const afterTotal = stat.totalClasses + classesOnSelectedDates;
-            const afterAttended = stat.attendedClasses;
-
-            const afterPercentage = afterTotal === 0
-                ? 100
-                : (afterAttended / afterTotal) * 100;
-
-            impacts.push({
-                subjectName: stat.subjectName,
-                currentPercentage: parseFloat(currentPercentage.toFixed(1)),
-                currentAttended: stat.attendedClasses,
-                currentTotal: stat.totalClasses,
-                afterPercentage: parseFloat(afterPercentage.toFixed(1)),
-                afterAttended: afterAttended,
-                afterTotal: afterTotal,
-                classesOnSelectedDates: classesOnSelectedDates
-            });
-        }
-
-        res.json({ impacts });
-
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
 
 router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
     try {
         const { classId, rollNumber, date } = req.params;
-        const rollNo = parseInt(rollNumber);
+        const rollNo = sanitizeRollNumber(rollNumber);
+
+        if (!mongoose.Types.ObjectId.isValid(classId)) {
+            return res.status(400).json({ error: 'Invalid Class ID' });
+        }
+
+        if (rollNo === null) {
+            return res.status(400).json({ error: 'Invalid Roll Number' });
+        }
+
+        const classroom = await Classroom.findById(classId).select('rollNumbers totalStudents').lean();
+        if (!classroom) return res.status(404).json({ error: 'Class not found' });
+
+        const classRollNumbers = getClassRollNumbers(classroom);
+        if (!classRollNumbers.includes(rollNo)) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
 
         // Normalize date to match how it's stored (same as attendance save)
         const normalizeDate = (dateString) => {
@@ -193,24 +193,20 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
 
         const queryDate = normalizeDate(date);
 
-        console.log('🔍 Looking for:', { classId, queryDate: queryDate.toISOString(), rollNo });
+
 
         // Find the most recent attendance record for this date
-        const attendanceRecord = await Attendance.findOne({
-            classId,
-            date: queryDate
-        }).sort({ updatedAt: -1 });
+        const attendanceRecord = await Attendance.findOne({ classId, date: queryDate }).sort({ updatedAt: -1 }).select('periods').lean();
 
-        console.log('🔍 Student calendar lookup:', { classId, date, found: !!attendanceRecord, periods: attendanceRecord?.periods?.length || 0 });
+
 
         // Only return data if attendance was actually marked
         if (!attendanceRecord || !attendanceRecord.periods || attendanceRecord.periods.length === 0) {
-            console.log('❌ No attendance data to return');
             return res.json({ periods: [] });
         }
 
         const periodsWithStatus = attendanceRecord.periods.map(period => {
-            const isAbsent = period.absentRollNumbers.includes(rollNo);
+            const isAbsent = isRollAbsent(period.absentRollNumbers, rollNo);
             return {
                 periodNum: period.periodNum,
                 subjectName: period.subjectName,
@@ -229,25 +225,41 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
 router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
     try {
         const { classId, rollNumber, subjectId } = req.params;
-        const rollNo = parseInt(rollNumber);
+        const rollNo = sanitizeRollNumber(rollNumber);
+
+        if (!mongoose.Types.ObjectId.isValid(classId)) {
+            return res.status(400).json({ error: 'Invalid Class ID' });
+        }
+
+        if (rollNo === null) {
+            return res.status(400).json({ error: 'Invalid Roll Number' });
+        }
+
+        const classroom = await Classroom.findById(classId).select('rollNumbers totalStudents').lean();
+        if (!classroom) return res.status(404).json({ error: 'Class not found' });
+
+        const classRollNumbers = getClassRollNumbers(classroom);
+        if (!classRollNumbers.includes(rollNo)) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
 
         // Find all attendance records containing this subject
         // Sort by date descending (newest first)
         const records = await Attendance.find({
             classId: classId,
             'periods.subjectId': subjectId
-        }).select('date periods').sort({ date: -1 });
+        }).select('date periods').sort({ date: -1 }).lean();
 
         const history = [];
 
         records.forEach(record => {
             // A subject might occur multiple times in one day (e.g. 2 periods)
-            const relevantPeriods = record.periods.filter(p => p.subjectId === subjectId);
+            const relevantPeriods = record.periods.filter(p => String(p.subjectId) === String(subjectId));
 
             relevantPeriods.forEach(p => {
                 history.push({
                     date: record.date, // Frontend will format this
-                    status: p.absentRollNumbers.includes(rollNo) ? 'Absent' : 'Present',
+                    status: isRollAbsent(p.absentRollNumbers, rollNo) ? 'Absent' : 'Present',
                     periodNum: p.periodNum
                 });
             });
