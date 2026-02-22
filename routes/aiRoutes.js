@@ -3,8 +3,17 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+const requireAdminAuth = (req, res) => {
+    if (req.user?.role === 'student') {
+        res.status(403).json({ error: 'Admin authentication required' });
+        return false;
+    }
+    return true;
+};
+
 router.post('/scan-logbook', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { imageBase64 } = req.body;
         if (!imageBase64) {
             return res.status(400).json({ error: 'No image provided' });

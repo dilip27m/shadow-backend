@@ -45,11 +45,29 @@ const isSameRollNumber = (left, right) => {
     return false;
 };
 
+const requireStudentAuth = (req, res) => {
+    if (req.user?.role !== 'student') {
+        res.status(403).json({ error: 'Student authentication required' });
+        return false;
+    }
+    return true;
+};
+
+const requireAdminAuth = (req, res) => {
+    if (req.user?.role === 'student') {
+        res.status(403).json({ error: 'Admin authentication required' });
+        return false;
+    }
+    return true;
+};
+
 // Submit a new report
-router.post('/submit', reportLimiter, async (req, res) => {
+router.post('/submit', reportLimiter, auth, async (req, res) => {
     try {
-        const { classId, studentRoll, date, subjectId, subjectName, issueDescription } = req.body;
-        const normalizedStudentRoll = sanitizeRollNumber(studentRoll);
+        if (!requireStudentAuth(req, res)) return;
+        const { date, subjectId, subjectName, issueDescription } = req.body;
+        const classId = req.user.classId;
+        const normalizedStudentRoll = sanitizeRollNumber(req.user.rollNumber);
 
 
         // Validate required fields
@@ -94,11 +112,16 @@ router.post('/submit', reportLimiter, async (req, res) => {
 // Get all reports for a class (admin use) - Protected
 router.get('/class/:classId', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { classId } = req.params;
 
         // Validate Class ID
         if (!mongoose.Types.ObjectId.isValid(classId)) {
             return res.status(400).json({ error: 'Invalid Class ID' });
+        }
+
+        if (req.user.classId !== classId) {
+            return res.status(403).json({ error: 'Unauthorized action for this class' });
         }
 
         const reports = await Report.find({ classId }).sort({ createdAt: -1 }).lean();
@@ -110,13 +133,18 @@ router.get('/class/:classId', auth, async (req, res) => {
 });
 
 // Get all reports for a specific student
-router.get('/:classId/:rollNumber', async (req, res) => {
+router.get('/:classId/:rollNumber', auth, async (req, res) => {
     try {
+        if (!requireStudentAuth(req, res)) return;
         const { classId, rollNumber } = req.params;
         const normalizedRollNumber = sanitizeRollNumber(rollNumber);
 
         if (!normalizedRollNumber) {
             return res.status(400).json({ error: 'Invalid Roll Number' });
+        }
+
+        if (req.user.classId !== classId || !isSameRollNumber(req.user.rollNumber, normalizedRollNumber)) {
+            return res.status(403).json({ error: 'Unauthorized access to reports' });
         }
 
         const rollQuery = /^\d+$/.test(normalizedRollNumber)
@@ -138,6 +166,7 @@ router.get('/:classId/:rollNumber', async (req, res) => {
 // Update report status (admin use) - Protected
 router.patch('/:reportId', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { reportId } = req.params;
         const { status, adminResponse } = req.body;
 
@@ -166,11 +195,11 @@ router.patch('/:reportId', auth, async (req, res) => {
 });
 
 // Delete report (Student use)
-router.delete('/delete/:reportId', async (req, res) => {
+router.delete('/delete/:reportId', auth, async (req, res) => {
     try {
+        if (!requireStudentAuth(req, res)) return;
         const { reportId } = req.params;
-        const { studentRoll } = req.query; // Send from frontend
-        const normalizedStudentRoll = sanitizeRollNumber(studentRoll);
+        const normalizedStudentRoll = sanitizeRollNumber(req.user.rollNumber);
 
         if (!normalizedStudentRoll) {
             return res.status(400).json({ error: 'Invalid student roll number' });
@@ -180,6 +209,10 @@ router.delete('/delete/:reportId', async (req, res) => {
 
         if (!report) {
             return res.status(404).json({ error: 'Report not found' });
+        }
+
+        if (report.classId.toString() !== req.user.classId) {
+            return res.status(403).json({ error: 'Unauthorized to delete this report' });
         }
 
         // Make sure only the student who created it can delete it
@@ -202,11 +235,12 @@ router.delete('/delete/:reportId', async (req, res) => {
 });
 
 // Edit report (Student use)
-router.patch('/edit/:reportId', reportLimiter, async (req, res) => {
+router.patch('/edit/:reportId', reportLimiter, auth, async (req, res) => {
     try {
+        if (!requireStudentAuth(req, res)) return;
         const { reportId } = req.params;
-        const { studentRoll, date, subjectId, subjectName, issueDescription } = req.body;
-        const normalizedStudentRoll = sanitizeRollNumber(studentRoll);
+        const { date, subjectId, subjectName, issueDescription } = req.body;
+        const normalizedStudentRoll = sanitizeRollNumber(req.user.rollNumber);
 
         if (!normalizedStudentRoll) {
             return res.status(400).json({ error: 'Invalid student roll number' });
@@ -216,6 +250,10 @@ router.patch('/edit/:reportId', reportLimiter, async (req, res) => {
 
         if (!report) {
             return res.status(404).json({ error: 'Report not found' });
+        }
+
+        if (report.classId.toString() !== req.user.classId) {
+            return res.status(403).json({ error: 'Unauthorized to edit this report' });
         }
 
         // Verify ownership

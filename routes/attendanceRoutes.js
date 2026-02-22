@@ -38,13 +38,26 @@ const normalizePeriodsForStorage = (periods) => {
     });
 };
 
+const requireAdminAuth = (req, res) => {
+    if (req.user?.role === 'student') {
+        res.status(403).json({ error: 'Admin authentication required' });
+        return false;
+    }
+    return true;
+};
+
 // @route   POST /api/attendance/mark
 router.post('/mark', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { classId, date, periods } = req.body;
 
         if (!classId || !date || !periods) {
             return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        if (req.user.classId !== classId) {
+            return res.status(403).json({ error: 'Unauthorized action for this class' });
         }
 
         const searchDate = normalizeDate(date);

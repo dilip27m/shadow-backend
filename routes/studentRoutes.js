@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose'); // Required for ObjectId casting
+const jwt = require('jsonwebtoken');
 const Classroom = require('../models/Classroom');
 const Attendance = require('../models/Attendance');
 
@@ -30,6 +31,48 @@ const isRollAbsent = (absentRollNumbers, rollNumber) => {
     if (!Array.isArray(absentRollNumbers)) return false;
     return absentRollNumbers.some((roll) => sanitizeRollNumber(roll) === rollNumber);
 };
+
+// Issue student access token after validating class + roll membership
+router.post('/access', async (req, res) => {
+    try {
+        const className = String(req.body?.className || '').trim();
+        const rollNumber = sanitizeRollNumber(req.body?.rollNumber);
+
+        if (!className || !rollNumber) {
+            return res.status(400).json({ error: 'className and rollNumber are required' });
+        }
+
+        const classroom = await Classroom.findOne({ className })
+            .collation({ locale: 'en', strength: 2 })
+            .select('_id className rollNumbers totalStudents')
+            .lean();
+
+        if (!classroom) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        const classRollNumbers = getClassRollNumbers(classroom);
+        if (!classRollNumbers.includes(rollNumber)) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+
+        const token = jwt.sign(
+            { classId: classroom._id.toString(), rollNumber, role: 'student' },
+            process.env.JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+
+        res.json({
+            classId: classroom._id,
+            className: classroom.className,
+            rollNumber,
+            token
+        });
+    } catch (err) {
+        console.error('Student access error:', err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
 
 // Get overall attendance report
 router.get('/report/:classId/:rollNumber', async (req, res) => {

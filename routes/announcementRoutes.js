@@ -3,6 +3,14 @@ const router = express.Router();
 const Announcement = require('../models/Announcement');
 const auth = require('../middleware/auth');
 
+const requireAdminAuth = (req, res) => {
+    if (req.user?.role === 'student') {
+        res.status(403).json({ error: 'Admin authentication required' });
+        return false;
+    }
+    return true;
+};
+
 // Get all announcements for a class (Public - students need access)
 router.get('/:classId', async (req, res) => {
     try {
@@ -22,14 +30,19 @@ router.get('/:classId', async (req, res) => {
 // Create new announcement (Protected - admin only)
 router.post('/', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { classId, title, description, subjectId, subjectName, dueDate } = req.body;
 
-        if (!classId || !title) {
-            return res.status(400).json({ error: 'classId and title are required' });
+        if (!title) {
+            return res.status(400).json({ error: 'title is required' });
+        }
+
+        if (classId && classId !== req.user.classId) {
+            return res.status(403).json({ error: 'Unauthorized action for this class' });
         }
 
         const announcement = new Announcement({
-            classId,
+            classId: req.user.classId,
             title: title.trim(),
             description: (description || '').trim(),
             subjectId: subjectId || null,
@@ -48,10 +61,15 @@ router.post('/', auth, async (req, res) => {
 // Update announcement (Protected - admin only)
 router.patch('/:id', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { title, description, subjectId, subjectName, dueDate } = req.body;
 
         const announcement = await Announcement.findById(req.params.id);
         if (!announcement) return res.status(404).json({ error: 'Announcement not found' });
+
+        if (announcement.classId.toString() !== req.user.classId) {
+            return res.status(403).json({ error: 'Unauthorized action for this class' });
+        }
 
         // Update fields
         if (title) announcement.title = title.trim();
@@ -71,8 +89,13 @@ router.patch('/:id', auth, async (req, res) => {
 // Delete announcement (Protected - admin only)
 router.delete('/:id', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const announcement = await Announcement.findById(req.params.id);
         if (!announcement) return res.status(404).json({ error: 'Announcement not found' });
+
+        if (announcement.classId.toString() !== req.user.classId) {
+            return res.status(403).json({ error: 'Unauthorized action for this class' });
+        }
 
         await Announcement.findByIdAndDelete(req.params.id);
         res.json({ message: 'Announcement deleted' });

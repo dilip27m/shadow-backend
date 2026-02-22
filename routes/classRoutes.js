@@ -27,6 +27,14 @@ const sanitizeRollNumbers = (values) => {
     return normalized;
 };
 
+const requireAdminAuth = (req, res) => {
+    if (req.user?.role === 'student') {
+        res.status(403).json({ error: 'Admin authentication required' });
+        return false;
+    }
+    return true;
+};
+
 // @route   POST /api/class/create
 // @desc    Create a new Classroom (Protected)
 router.post('/create', async (req, res) => {
@@ -60,7 +68,7 @@ router.post('/create', async (req, res) => {
 
         // Generate token immediately for the creator
         const token = jwt.sign(
-            { classId: savedClass._id },
+            { classId: savedClass._id, role: 'admin' },
             process.env.JWT_SECRET,
             { expiresIn: '30d' }
         );
@@ -86,6 +94,7 @@ router.post('/create', async (req, res) => {
 // @desc    Add one roll number to the class without duplicates (Protected)
 router.patch('/:classId/students', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { classId } = req.params;
         const rollNumber = sanitizeRollNumber(req.body.rollNumber);
 
@@ -147,7 +156,7 @@ router.post('/admin-login', async (req, res) => {
 
         // Generate JWT Token
         const token = jwt.sign(
-            { classId: classroom._id },
+            { classId: classroom._id, role: 'admin' },
             process.env.JWT_SECRET,
             { expiresIn: '30d' }
         );
@@ -166,6 +175,7 @@ router.post('/admin-login', async (req, res) => {
 // @desc    Verify existing token and issue a fresh one (auto-renewal)
 router.post('/verify-token', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         // Token is already verified by auth middleware, req.user has { classId }
         const classroom = await Classroom.findById(req.user.classId).select('className').lean();
         if (!classroom) {
@@ -174,7 +184,7 @@ router.post('/verify-token', auth, async (req, res) => {
 
         // Issue a fresh 30-day token
         const newToken = jwt.sign(
-            { classId: classroom._id },
+            { classId: classroom._id, role: 'admin' },
             process.env.JWT_SECRET,
             { expiresIn: '30d' }
         );
@@ -194,6 +204,7 @@ router.post('/verify-token', auth, async (req, res) => {
 // @desc    Add a new subject (Protected)
 router.post('/:id/add-subject', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { name } = req.body;
         const classId = req.params.id;
 
@@ -222,6 +233,7 @@ router.post('/:id/add-subject', auth, async (req, res) => {
 // @desc    Edit an existing subject (Protected)
 router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { name } = req.body;
         const classId = req.params.id;
         const subjectId = req.params.subjectId;
@@ -255,6 +267,7 @@ router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
 // @desc    Delete a subject (Protected)
 router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const classId = req.params.id;
         const subjectId = req.params.subjectId;
 
