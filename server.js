@@ -78,11 +78,11 @@ if (!mongoUri) {
 }
 
 mongoose.connect(mongoUri, {
-    maxPoolSize: 10, // Limit to 10 to stay within Free Tier limits
+    maxPoolSize: 50, // Increased to 50 for even higher concurrency 
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
 })
-    .then(() => console.log('MongoDB Connected (Pool Limited to 10)'))
+    .then(() => console.log('MongoDB Connected (Pool Limited to 50)'))
     .catch(err => console.log(err));
 
 // ─── Routes ───
