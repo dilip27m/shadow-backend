@@ -5,23 +5,50 @@ const bcrypt = require('bcryptjs'); // Import bcrypt for security
 const Classroom = require('../models/Classroom');
 const auth = require('../middleware/auth');
 
-// Helper: Escape special regex characters from user input
-const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const sanitizeRollNumber = (value) => {
+    if (value === undefined || value === null) return null;
+    const cleaned = String(value).trim();
+    return cleaned || null;
+};
+
+const sanitizeRollNumbers = (values) => {
+    if (!Array.isArray(values)) return [];
+    const seen = new Set();
+    const normalized = [];
+
+    values.forEach((value) => {
+        const cleaned = sanitizeRollNumber(value);
+        if (cleaned && !seen.has(cleaned)) {
+            seen.add(cleaned);
+            normalized.push(cleaned);
+        }
+    });
+
+    return normalized;
+};
+
+const requireAdminAuth = (req, res) => {
+    if (req.user?.role === 'student') {
+        res.status(403).json({ error: 'Admin authentication required' });
+        return false;
+    }
+    return true;
+};
 
 // @route   POST /api/class/create
 // @desc    Create a new Classroom (Protected)
 router.post('/create', async (req, res) => {
     try {
-        const { className, adminPin, totalStudents, subjects } = req.body;
+        const { className, adminPin, rollNumbers, subjects } = req.body;
+        const normalizedRollNumbers = sanitizeRollNumbers(rollNumbers);
 
-        if (!className || !adminPin || !totalStudents) {
+        if (!className || !adminPin || normalizedRollNumbers.length === 0) {
             return res.status(400).json({ error: 'Please provide all required fields' });
         }
 
         // Check for case-insensitive duplicate: "CSE B", "cse b", "Cse B" → same class
-        const existing = await Classroom.findOne({
-            className: { $regex: new RegExp(`^${escapeRegex(className.trim())}$`, 'i') }
-        });
+        const _className = className.trim();
+        const existing = await Classroom.findOne({ className: _className }).collation({ locale: 'en', strength: 2 }).select('_id').lean();
         if (existing) {
             return res.status(400).json({ error: 'Class Name already exists! Please choose another.' });
         }
@@ -31,9 +58,9 @@ router.post('/create', async (req, res) => {
         const hashedPin = await bcrypt.hash(adminPin, salt);
 
         const newClass = new Classroom({
-            className,
+            className: _className,
             adminPin: hashedPin, // Store the hash, not the plain text
-            totalStudents,
+            rollNumbers: normalizedRollNumbers,
             subjects
         });
 
@@ -41,7 +68,7 @@ router.post('/create', async (req, res) => {
 
         // Generate token immediately for the creator
         const token = jwt.sign(
-            { classId: savedClass._id },
+            { classId: savedClass._id, role: 'admin' },
             process.env.JWT_SECRET,
             { expiresIn: '30d' }
         );
@@ -63,15 +90,58 @@ router.post('/create', async (req, res) => {
     }
 });
 
+// @route   PATCH /api/class/:classId/students
+// @desc    Add one roll number to the class without duplicates (Protected)
+router.patch('/:classId/students', auth, async (req, res) => {
+    try {
+        if (!requireAdminAuth(req, res)) return;
+        const { classId } = req.params;
+        const rollNumber = sanitizeRollNumber(req.body.rollNumber);
+
+        if (req.user.classId !== classId) {
+            return res.status(403).json({ error: 'Unauthorized action' });
+        }
+
+        if (!rollNumber) {
+            return res.status(400).json({ error: 'rollNumber is required' });
+        }
+
+        const updateResult = await Classroom.updateOne(
+            { _id: classId },
+            { $addToSet: { rollNumbers: rollNumber } }
+        );
+
+        if (updateResult.matchedCount === 0) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        if (updateResult.modifiedCount === 0) {
+            return res.status(409).json({ error: 'Roll number already exists in this class' });
+        }
+
+        const classroom = await Classroom.findById(classId).select('_id className rollNumbers').lean();
+        res.json({
+            message: 'Student added successfully',
+            rollNumber,
+            rollNumbers: classroom.rollNumbers
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
 // @route   POST /api/class/admin-login
 // @desc    Verify Admin PIN and Return Token
 router.post('/admin-login', async (req, res) => {
     try {
         const { className, adminPin } = req.body;
+        const _className = (className || '').trim();
 
-        const classroom = await Classroom.findOne({
-            className: { $regex: new RegExp(`^${escapeRegex(className)}$`, 'i') }
-        });
+        const classroom = await Classroom.findOne({ className: _className })
+            .collation({ locale: 'en', strength: 2 })
+            .select('className adminPin')
+            .lean();
 
         if (!classroom) {
             return res.status(404).json({ error: 'Class not found' });
@@ -86,7 +156,7 @@ router.post('/admin-login', async (req, res) => {
 
         // Generate JWT Token
         const token = jwt.sign(
-            { classId: classroom._id },
+            { classId: classroom._id, role: 'admin' },
             process.env.JWT_SECRET,
             { expiresIn: '30d' }
         );
@@ -105,15 +175,16 @@ router.post('/admin-login', async (req, res) => {
 // @desc    Verify existing token and issue a fresh one (auto-renewal)
 router.post('/verify-token', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         // Token is already verified by auth middleware, req.user has { classId }
-        const classroom = await Classroom.findById(req.user.classId).select('className');
+        const classroom = await Classroom.findById(req.user.classId).select('className').lean();
         if (!classroom) {
             return res.status(404).json({ error: 'Class not found' });
         }
 
         // Issue a fresh 30-day token
         const newToken = jwt.sign(
-            { classId: classroom._id },
+            { classId: classroom._id, role: 'admin' },
             process.env.JWT_SECRET,
             { expiresIn: '30d' }
         );
@@ -133,6 +204,7 @@ router.post('/verify-token', auth, async (req, res) => {
 // @desc    Add a new subject (Protected)
 router.post('/:id/add-subject', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { name } = req.body;
         const classId = req.params.id;
 
@@ -161,6 +233,7 @@ router.post('/:id/add-subject', auth, async (req, res) => {
 // @desc    Edit an existing subject (Protected)
 router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { name } = req.body;
         const classId = req.params.id;
         const subjectId = req.params.subjectId;
@@ -194,6 +267,7 @@ router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
 // @desc    Delete a subject (Protected)
 router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const classId = req.params.id;
         const subjectId = req.params.subjectId;
 
@@ -232,8 +306,12 @@ router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
 router.get('/stats/all', async (req, res) => {
     try {
         const totalClasses = await Classroom.countDocuments();
-        const classrooms = await Classroom.find({}, 'totalStudents');
-        const totalStudents = classrooms.reduce((sum, c) => sum + c.totalStudents, 0);
+        const classrooms = await Classroom.find({}, 'rollNumbers totalStudents').lean();
+        const totalStudents = classrooms.reduce((sum, c) => {
+            if (Array.isArray(c.rollNumbers)) return sum + c.rollNumbers.length;
+            if (Number.isFinite(c.totalStudents)) return sum + c.totalStudents;
+            return sum;
+        }, 0);
 
         res.json({
             totalClasses,
@@ -246,9 +324,8 @@ router.get('/stats/all', async (req, res) => {
 
 router.get('/lookup/:className', async (req, res) => {
     try {
-        const classroom = await Classroom.findOne({
-            className: { $regex: new RegExp(`^${escapeRegex(req.params.className)}$`, 'i') }
-        });
+        const className = req.params.className;
+        const classroom = await Classroom.findOne({ className }).collation({ locale: 'en', strength: 2 }).select('_id className').lean();
 
         if (!classroom) {
             return res.status(404).json({ error: 'Class not found' });
@@ -263,7 +340,7 @@ router.get('/lookup/:className', async (req, res) => {
 // Catch-all by ID — must be LAST among GET routes
 router.get('/:id', async (req, res) => {
     try {
-        const classroom = await Classroom.findById(req.params.id).select('-adminPin');
+        const classroom = await Classroom.findById(req.params.id).select('-adminPin').lean();
         if (!classroom) return res.status(404).json({ error: 'Class not found' });
         res.json(classroom);
     } catch (err) {

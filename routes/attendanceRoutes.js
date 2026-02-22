@@ -10,20 +10,62 @@ const normalizeDate = (dateString) => {
     return new Date(`${datePart}T00:00:00.000Z`);
 };
 
+const sanitizeRollNumber = (value) => {
+    if (value === undefined || value === null) return null;
+    const cleaned = String(value).trim();
+    return cleaned || null;
+};
+
+const normalizePeriodsForStorage = (periods) => {
+    if (!Array.isArray(periods)) return [];
+
+    return periods.map((period) => {
+        const seen = new Set();
+        const absentRollNumbers = Array.isArray(period.absentRollNumbers)
+            ? period.absentRollNumbers
+                .map((roll) => sanitizeRollNumber(roll))
+                .filter((roll) => {
+                    if (!roll || seen.has(roll)) return false;
+                    seen.add(roll);
+                    return true;
+                })
+            : [];
+
+        return {
+            ...period,
+            absentRollNumbers
+        };
+    });
+};
+
+const requireAdminAuth = (req, res) => {
+    if (req.user?.role === 'student') {
+        res.status(403).json({ error: 'Admin authentication required' });
+        return false;
+    }
+    return true;
+};
+
 // @route   POST /api/attendance/mark
 router.post('/mark', auth, async (req, res) => {
     try {
+        if (!requireAdminAuth(req, res)) return;
         const { classId, date, periods } = req.body;
 
         if (!classId || !date || !periods) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
+        if (req.user.classId !== classId) {
+            return res.status(403).json({ error: 'Unauthorized action for this class' });
+        }
+
         const searchDate = normalizeDate(date);
+        const normalizedPeriods = normalizePeriodsForStorage(periods);
 
         const updatedRecord = await Attendance.findOneAndUpdate(
             { classId: classId, date: searchDate },
-            { $set: { periods: periods } },
+            { $set: { periods: normalizedPeriods } },
             { new: true, upsert: true }
         );
 
@@ -43,7 +85,7 @@ router.get('/by-date/:classId/:date', async (req, res) => {
         const { classId, date } = req.params;
         const searchDate = normalizeDate(date);
 
-        const record = await Attendance.findOne({ classId, date: searchDate });
+        const record = await Attendance.findOne({ classId, date: searchDate }).lean();
 
         if (!record) {
             return res.json({ periods: [] });
@@ -60,7 +102,7 @@ router.get('/by-date/:classId/:date', async (req, res) => {
 router.get('/dates/:classId', async (req, res) => {
     try {
         const { classId } = req.params;
-        const records = await Attendance.find({ classId }).select('date -_id').sort({ date: -1 });
+        const records = await Attendance.find({ classId }).select('date -_id').sort({ date: -1 }).lean();
 
         const dates = records.map(r => r.date);
         res.json({ dates });

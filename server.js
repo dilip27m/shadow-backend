@@ -12,6 +12,7 @@ const attendanceRoutes = require('./routes/attendanceRoutes');
 const studentRoutes = require('./routes/studentRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const announcementRoutes = require('./routes/announcementRoutes');
+const aiRoutes = require('./routes/aiRoutes');
 
 const app = express();
 
@@ -20,7 +21,7 @@ const app = express();
 const corsOptions = {
     origin: true, // Reflects the request origin, allowing any origin
     credentials: true, // Required for cookies/authorization headers
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     optionsSuccessStatus: 200
 };
@@ -42,7 +43,8 @@ if (process.env.NODE_ENV !== 'test') {
 app.use(compression());
 
 // ─── Body Parser ───
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ─── Rate Limiting ───
 const limiter = rateLimit({
@@ -55,39 +57,42 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 // ─── Response Caching Headers ───
-// ─── Response Caching Headers ───
-// Force no-cache for all API responses to ensure real-time updates
+// Keep caching only for safe aggregate stats; serve live data everywhere else.
 app.use((req, res, next) => {
-    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.set('Pragma', 'no-cache');
-    res.set('Expires', '0');
+    const isStatsRoute = req.method === 'GET' && (
+        req.path === '/api/class/stats/all' || req.path === '/api/classes/stats/all'
+    );
+    if (isStatsRoute) {
+        res.set('Cache-Control', 'public, max-age=60');
+    } else {
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    }
     next();
 });
 
 // ─── DB Connection ───
-const connectDB = async () => {
-    try {
-        const conn = await mongoose.connect(process.env.MONGO_URI, {
-            // Performance: reuse connections, set timeouts
-            maxPoolSize: 10,
-            serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 45000,
-        });
-        console.log(`MongoDB Connected: ${conn.connection.host}`);
-    } catch (error) {
-        console.error(`Error: ${error.message}`);
-        process.exit(1);
-    }
-};
+const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI;
+if (!mongoUri) {
+    console.error('MongoDB URI is missing. Set MONGODB_URI or MONGO_URI.');
+    process.exit(1);
+}
 
-connectDB();
+mongoose.connect(mongoUri, {
+    maxPoolSize: 10, // Limit to 10 to stay within Free Tier limits
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+})
+    .then(() => console.log('MongoDB Connected (Pool Limited to 10)'))
+    .catch(err => console.log(err));
 
 // ─── Routes ───
 app.use('/api/class', classRoutes);
+app.use('/api/classes', classRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/student', studentRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/announcements', announcementRoutes);
+app.use('/api/ai', aiRoutes);
 
 // Health check
 app.get('/', (req, res) => {
@@ -108,7 +113,6 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5001;
-
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => { // Binding to 0.0.0.0 is best for cloud deploys
     console.log(`Server running on port ${PORT}`);
 });
