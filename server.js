@@ -90,6 +90,7 @@ app.use('/api/class', classRoutes);
 app.use('/api/classes', classRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/student', studentRoutes);
+app.use('/api/teacher', require('./routes/teacherRoutes')); // Add Teacher Routes
 app.use('/api/reports', reportRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/ai', aiRoutes);

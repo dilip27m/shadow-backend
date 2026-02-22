@@ -1,10 +1,11 @@
 const mongoose = require('mongoose');
 
 const ClassroomSchema = new mongoose.Schema({
-    // Keep this field simple; uniqueness is enforced by the collation index below
+    // FIX: Add unique: true and trim whitespace
     className: {
         type: String,
         required: true,
+        unique: true,
         trim: true
     },
     adminPin: { type: String, required: true },
@@ -20,7 +21,10 @@ const ClassroomSchema = new mongoose.Schema({
     subjects: [{
         name: { type: String, required: true },
         code: { type: String },
-        totalClassesExpected: { type: Number, default: 40 }
+        totalClassesExpected: { type: Number, default: 40 },
+        teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher', default: null },
+        teacherName: { type: String, default: null },
+        teacherStatus: { type: String, enum: ['Pending', 'Accepted', 'Verified'], default: null }
     }],
 
     createdAt: { type: Date, default: Date.now }

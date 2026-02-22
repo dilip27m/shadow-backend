@@ -273,4 +273,50 @@ router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
     }
 });
 
+// @route   POST /api/student/request
+// @desc    Create a Modification Request
+router.post('/request', async (req, res) => {
+    try {
+        const { classId, studentId, subjectId, date, reason } = req.body;
+
+        // Simple validation
+        if (!classId || !studentId || !subjectId || !date) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        const ModificationRequest = require('../models/ModificationRequest');
+
+        // Check if pending request exists
+        const existing = await ModificationRequest.findOne({
+            classId,
+            studentId,
+            subjectId,
+            date,
+            status: 'Pending'
+        });
+
+        if (existing) {
+            return res.status(400).json({ error: 'A pending request already exists for this date.' });
+        }
+
+        const newRequest = new ModificationRequest({
+            classId,
+            studentId,
+            subjectId,
+            date, // Ensure frontend sends ISO string or YYYY-MM-DD
+            reason,
+            status: 'Pending',
+            requestedBy: studentId // Use roll number, not string 'Student'
+        });
+
+        await newRequest.save();
+
+        res.json({ message: 'Request submitted successfully' });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
 module.exports = router;
