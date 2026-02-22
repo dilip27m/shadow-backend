@@ -12,6 +12,7 @@ const attendanceRoutes = require('./routes/attendanceRoutes');
 const studentRoutes = require('./routes/studentRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const announcementRoutes = require('./routes/announcementRoutes');
+const aiRoutes = require('./routes/aiRoutes');
 
 const app = express();
 
@@ -20,7 +21,7 @@ const app = express();
 const corsOptions = {
     origin: true, // Reflects the request origin, allowing any origin
     credentials: true, // Required for cookies/authorization headers
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     optionsSuccessStatus: 200
 };
@@ -42,7 +43,8 @@ if (process.env.NODE_ENV !== 'test') {
 app.use(compression());
 
 // ─── Body Parser ───
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ─── Rate Limiting ───
 const limiter = rateLimit({
@@ -87,6 +89,7 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/student', studentRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/announcements', announcementRoutes);
+app.use('/api/ai', aiRoutes);
 
 // Health check
 app.get('/', (req, res) => {
