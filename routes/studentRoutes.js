@@ -44,7 +44,7 @@ router.post('/access', async (req, res) => {
 
         const classroom = await Classroom.findOne({ className })
             .collation({ locale: 'en', strength: 2 })
-            .select('_id className rollNumbers totalStudents')
+            .select('_id className rollNumbers totalStudents blockedRollNumbers')
             .lean();
 
         if (!classroom) {
@@ -54,6 +54,12 @@ router.post('/access', async (req, res) => {
         const classRollNumbers = getClassRollNumbers(classroom);
         if (!classRollNumbers.includes(rollNumber)) {
             return res.status(404).json({ error: 'Student not found' });
+        }
+
+        // Check if the student is blocked (privacy opt-out)
+        const blockedRolls = (classroom.blockedRollNumbers || []).map(r => sanitizeRollNumber(r)).filter(Boolean);
+        if (blockedRolls.includes(rollNumber)) {
+            return res.status(403).json({ error: 'This roll number\'s attendance is set to private by the class admin.' });
         }
 
         const token = jwt.sign(
@@ -88,12 +94,18 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
             return res.status(400).json({ error: 'Invalid Roll Number' });
         }
 
-        const classroom = await Classroom.findById(classId).select('className subjects rollNumbers totalStudents').lean();
+        const classroom = await Classroom.findById(classId).select('className subjects rollNumbers totalStudents blockedRollNumbers').lean();
         if (!classroom) return res.status(404).json({ error: 'Class not found' });
 
         const classRollNumbers = getClassRollNumbers(classroom);
         if (!classRollNumbers.includes(rollNo)) {
             return res.status(404).json({ error: 'Student not found' });
+        }
+
+        // Check if the student is blocked (privacy opt-out)
+        const blockedRolls = (classroom.blockedRollNumbers || []).map(r => sanitizeRollNumber(r)).filter(Boolean);
+        if (blockedRolls.includes(rollNo)) {
+            return res.status(403).json({ error: 'This roll number\'s attendance is set to private by the class admin.' });
         }
 
         // 🚀 OPTIMIZATION: Use Aggregation instead of fetching all records

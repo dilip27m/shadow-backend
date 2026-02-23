@@ -13,6 +13,7 @@ const studentRoutes = require('./routes/studentRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const announcementRoutes = require('./routes/announcementRoutes');
 const aiRoutes = require('./routes/aiRoutes');
+const pushRoutes = require('./routes/pushRoutes');
 
 const app = express();
 
@@ -93,6 +94,7 @@ app.use('/api/student', studentRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/push', pushRoutes);
 
 // Health check
 app.get('/', (req, res) => {

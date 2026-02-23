@@ -1,7 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const Attendance = require('../models/Attendance');
+const Classroom = require('../models/Classroom');
 const auth = require('../middleware/auth');
+const { sendPushToClass } = require('../utils/pushService');
 
 // FIX: Extract date string directly to avoid timezone-driven day shifts
 const normalizeDate = (dateString) => {
@@ -77,6 +79,23 @@ router.post('/mark', auth, async (req, res) => {
         }
 
         res.json({ message: 'Attendance Saved Successfully!', data: updatedRecord });
+
+        // Send push notifications (non-blocking, fire-and-forget)
+        if (normalizedPeriods.length > 0) {
+            Classroom.findById(classId).select('className').lean()
+                .then(cls => {
+                    const name = cls?.className || 'your class';
+                    const dateLabel = new Date(date + 'T00:00:00').toLocaleDateString('en-US', {
+                        month: 'short', day: 'numeric'
+                    });
+                    sendPushToClass(classId, {
+                        title: `📋 Attendance Updated`,
+                        body: `${name} — ${dateLabel}`,
+                        url: '/'
+                    });
+                })
+                .catch(() => { });
+        }
 
     } catch (err) {
         console.error(err);

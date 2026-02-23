@@ -346,6 +346,79 @@ router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
 
 
 
+// @route   PATCH /api/class/:classId/block-student
+// @desc    Block a roll number from student login (privacy opt-out)
+router.patch('/:classId/block-student', auth, async (req, res) => {
+    try {
+        if (!requireAdminAuth(req, res)) return;
+        const { classId } = req.params;
+        const rollNumber = sanitizeRollNumber(req.body.rollNumber);
+
+        if (req.user.classId !== classId) {
+            return res.status(403).json({ error: 'Unauthorized action' });
+        }
+
+        if (!rollNumber) {
+            return res.status(400).json({ error: 'rollNumber is required' });
+        }
+
+        const result = await Classroom.updateOne(
+            { _id: classId },
+            { $addToSet: { blockedRollNumbers: rollNumber } }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        const classroom = await Classroom.findById(classId).select('blockedRollNumbers').lean();
+        res.json({
+            message: `Roll number ${rollNumber} blocked successfully`,
+            blockedRollNumbers: classroom.blockedRollNumbers || []
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// @route   PATCH /api/class/:classId/unblock-student
+// @desc    Unblock a roll number (re-enable student login)
+router.patch('/:classId/unblock-student', auth, async (req, res) => {
+    try {
+        if (!requireAdminAuth(req, res)) return;
+        const { classId } = req.params;
+        const rollNumber = sanitizeRollNumber(req.body.rollNumber);
+
+        if (req.user.classId !== classId) {
+            return res.status(403).json({ error: 'Unauthorized action' });
+        }
+
+        if (!rollNumber) {
+            return res.status(400).json({ error: 'rollNumber is required' });
+        }
+
+        const result = await Classroom.updateOne(
+            { _id: classId },
+            { $pull: { blockedRollNumbers: rollNumber } }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        const classroom = await Classroom.findById(classId).select('blockedRollNumbers').lean();
+        res.json({
+            message: `Roll number ${rollNumber} unblocked successfully`,
+            blockedRollNumbers: classroom.blockedRollNumbers || []
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+
 // --- Public Routes (No Auth Needed) ---
 
 // @route   GET /api/class/stats/all

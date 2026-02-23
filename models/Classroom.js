@@ -23,6 +23,11 @@ const ClassroomSchema = new mongoose.Schema({
         totalClassesExpected: { type: Number, default: 40 }
     }],
 
+    blockedRollNumbers: {
+        type: [String],
+        default: []
+    },
+
     createdAt: { type: Date, default: Date.now }
 });
 

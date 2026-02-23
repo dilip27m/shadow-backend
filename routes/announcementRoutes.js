@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Announcement = require('../models/Announcement');
 const auth = require('../middleware/auth');
+const { sendPushToClass } = require('../utils/pushService');
 
 const requireAdminAuth = (req, res) => {
     if (req.user?.role === 'student') {
@@ -41,17 +42,31 @@ router.post('/', auth, async (req, res) => {
             return res.status(403).json({ error: 'Unauthorized action for this class' });
         }
 
+        // Compute expiry: 6 days after due date
+        let expiresAt = null;
+        if (dueDate) {
+            expiresAt = new Date(new Date(dueDate).getTime() + 6 * 24 * 60 * 60 * 1000);
+        }
+
         const announcement = new Announcement({
             classId: req.user.classId,
             title: title.trim(),
             description: (description || '').trim(),
             subjectId: subjectId || null,
             subjectName: subjectName || 'General',
-            dueDate: dueDate || null
+            dueDate: dueDate || null,
+            expiresAt
         });
 
         await announcement.save();
         res.status(201).json(announcement);
+
+        // Send push notification (non-blocking)
+        sendPushToClass(req.user.classId, {
+            title: `📢 New Announcement`,
+            body: announcement.title,
+            url: '/'
+        }).catch(() => { });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
@@ -76,7 +91,15 @@ router.patch('/:id', auth, async (req, res) => {
         if (description !== undefined) announcement.description = (description || '').trim();
         if (subjectId !== undefined) announcement.subjectId = subjectId || null;
         if (subjectName !== undefined) announcement.subjectName = subjectName || 'General';
-        if (dueDate !== undefined) announcement.dueDate = dueDate || null;
+        if (dueDate !== undefined) {
+            announcement.dueDate = dueDate || null;
+            // Recompute expiry when due date changes
+            if (dueDate) {
+                announcement.expiresAt = new Date(new Date(dueDate).getTime() + 6 * 24 * 60 * 60 * 1000);
+            } else {
+                announcement.expiresAt = null;
+            }
+        }
 
         await announcement.save();
         res.json(announcement);
