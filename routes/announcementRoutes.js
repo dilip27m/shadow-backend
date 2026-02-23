@@ -18,6 +18,25 @@ router.get('/:classId', async (req, res) => {
         // Announcements are time-sensitive; always bypass browser/proxy caches.
         res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
 
+        const sixDaysAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
+
+        // Clean up overdue announcements (due date + 6 days passed)
+        await Announcement.deleteMany({
+            classId: req.params.classId,
+            dueDate: { $ne: null, $lt: sixDaysAgo }
+        });
+
+        // Backfill expiresAt for old announcements that have dueDate but no expiresAt
+        const needsBackfill = await Announcement.find({
+            classId: req.params.classId,
+            dueDate: { $ne: null },
+            expiresAt: null
+        });
+        for (const ann of needsBackfill) {
+            ann.expiresAt = new Date(new Date(ann.dueDate).getTime() + 6 * 24 * 60 * 60 * 1000);
+            await ann.save();
+        }
+
         const announcements = await Announcement.find({ classId: req.params.classId })
             .sort({ createdAt: -1 })
             .limit(100).lean();
