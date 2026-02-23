@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Announcement = require('../models/Announcement');
 const auth = require('../middleware/auth');
+const { sendPushToClass } = require('../utils/pushService');
 
 const requireAdminAuth = (req, res) => {
     if (req.user?.role === 'student') {
@@ -52,6 +53,13 @@ router.post('/', auth, async (req, res) => {
 
         await announcement.save();
         res.status(201).json(announcement);
+
+        // Send push notification (non-blocking)
+        sendPushToClass(req.user.classId, {
+            title: `📢 New Announcement`,
+            body: announcement.title,
+            url: '/'
+        }).catch(() => { });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
