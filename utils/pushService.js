@@ -34,7 +34,7 @@ const sendPushToClass = async (classId, { title, body, url }) => {
             body: body || 'You have a new update.',
             url: url || '/',
             icon: '/icon-192.png',
-            badge: '/icon-192.png'
+            badge: '/logo_92.png'
         });
 
         const expiredEndpoints = [];
