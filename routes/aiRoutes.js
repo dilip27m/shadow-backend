@@ -180,4 +180,116 @@ CRITICAL INSTRUCTIONS:
     }
 });
 
+// Scan a digital app screenshot (color-coded grid: green=present, red=absent, yellow=late)
+router.post('/scan-logbook-app', auth, async (req, res) => {
+    try {
+        if (!requireAdminAuth(req, res)) return;
+        const { imageBase64 } = req.body;
+        if (!imageBase64) {
+            return res.status(400).json({ error: 'No image provided' });
+        }
+
+        const apiKeyString = process.env.GEMINI_API_KEY;
+        if (!apiKeyString) {
+            return res.status(500).json({ error: 'AI features are not configured on this server.' });
+        }
+
+        const apiKeys = apiKeyString.split(',').map(key => key.trim()).filter(key => key.length > 0);
+        if (apiKeys.length === 0) {
+            return res.status(500).json({ error: 'No valid AI API keys found.' });
+        }
+
+        const mimeTypeMatch = imageBase64.match(/^data:([^;]+);base64,/);
+        const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg";
+        const base64Data = imageBase64.replace(/^data:[^;]+;base64,/, "");
+
+        const prompt = `You are an attendance parser for a digital logbook app screenshot. The image shows a color-coded attendance grid where:
+- GREEN cells = Present
+- RED cells = Absent
+- YELLOW/ORANGE cells = Late (still counts as present but should be noted)
+
+Each row or cell corresponds to a student roll number.
+
+INSTRUCTIONS:
+1. Identify all ABSENT (red) roll numbers and all LATE (yellow/orange) roll numbers.
+2. Return ONLY a JSON object with exactly two keys: "absent" and "late".
+3. Each value should be a comma-separated string of roll numbers.
+4. If none are absent or late, use an empty string.
+5. Do NOT include any markdown, explanation, or text outside the JSON.
+
+Example output: {"absent": "4, 12, 23", "late": "7, 15"}`;
+
+        const imagePart = {
+            inlineData: {
+                data: base64Data,
+                mimeType: mimeType
+            },
+        };
+
+        const safetySettings = [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+        ];
+
+        let result = null;
+        let lastError = null;
+
+        for (const key of apiKeys) {
+            try {
+                const genAI = new GoogleGenerativeAI(key);
+                const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash", safetySettings });
+                result = await model.generateContent([prompt, imagePart]);
+                break;
+            } catch (error) {
+                console.warn('AI key failed, trying next one if available...', error.message);
+                lastError = error;
+            }
+        }
+
+        if (!result) {
+            const errMsg = lastError?.message || "";
+            if (errMsg.includes("429") || errMsg.includes("quota")) {
+                throw new Error("Camera feature is disabled for today, please try again later.");
+            }
+            throw lastError || new Error("All provided Gemini API keys failed.");
+        }
+
+        let responseText = "";
+        try {
+            if (result.response && result.response.candidates && result.response.candidates.length > 0) {
+                const candidate = result.response.candidates[0];
+                if (candidate.finishReason !== 'STOP') {
+                    throw new Error(`AI generation halted. Reason: ${candidate.finishReason}`);
+                }
+            }
+            responseText = result.response.text();
+        } catch (e) {
+            console.error("Failed to extract text from AI response:", JSON.stringify(result));
+            throw new Error("Google AI blocked the image or returned empty content. Try a cleaner screenshot.");
+        }
+
+        responseText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+
+        let parsedData = {};
+        try {
+            parsedData = JSON.parse(responseText);
+        } catch (e) {
+            console.error("AI returned invalid JSON for app scan:", responseText);
+            // Try to extract numbers as fallback
+            const numbersMatch = responseText.match(/\d+/g);
+            parsedData = { absent: numbersMatch ? numbersMatch.join(', ') : '', late: '' };
+        }
+
+        res.json({
+            absent: parsedData.absent || '',
+            late: parsedData.late || ''
+        });
+    } catch (error) {
+        console.error('AI App Scan Error:', error);
+        res.status(500).json({ error: 'Failed to process app screenshot', details: error.message || 'Unknown AI error occurred.' });
+    }
+});
+
 module.exports = router;
