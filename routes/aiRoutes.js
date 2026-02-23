@@ -78,8 +78,7 @@ router.post('/scan-logbook', auth, async (req, res) => {
     }
 });
 
-// Scan department LOGBOOK app screenshot (color-coded grid: green=present, red=absent, yellow=late)
-router.post('/scan-logbook-app', auth, async (req, res) => {
+router.post('/scan-full-logbook', auth, async (req, res) => {
     try {
         if (!requireAdminAuth(req, res)) return;
         const { imageBase64 } = req.body;
@@ -97,43 +96,20 @@ router.post('/scan-logbook-app', auth, async (req, res) => {
             return res.status(500).json({ error: 'No valid AI API keys found.' });
         }
 
-        // Extract actual MIME type from the base64 string
         const mimeTypeMatch = imageBase64.match(/^data:([^;]+);base64,/);
         const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg";
         const base64Data = imageBase64.replace(/^data:[^;]+;base64,/, "");
 
-        const prompt = `You are an attendance parser for a LOGBOOK application screenshot.
+        const prompt = `You are an expert attendance parser. Look at the attached image of a handwritten logbook page. The page contains a table with 'PERIOD' numbers and 'ABSENTEES'.
+You need to extract the absentee roll numbers for each period and output them strictly as a JSON object.
 
-The image shows a grid/table of colored cells. Each cell contains:
-- A LARGE, PROMINENT number (this is the roll number — the ONLY number you should extract)
-- Small text above or near it (like "AIE23", "CSE22", dates, etc.) — COMPLETELY IGNORE all small text and small numbers
-
-HOW TO IDENTIFY ROLL NUMBERS:
-- Roll numbers are displayed in a SIGNIFICANTLY BIGGER font size compared to everything else in the image
-- They are the main/central number inside each colored cell
-- Any other numbers (dates, batch codes, section numbers, navigation elements, header text) will be in a much smaller font — IGNORE them entirely
-
-Each cell has a background color indicating attendance status:
-  - GREEN background = Present
-  - RED background = Absent
-  - YELLOW or ORANGE background = Late comer
-
-ROLL NUMBER FORMAT:
-The roll numbers shown are 3-digit numbers where the HUNDREDS digit is a section code and must be REMOVED.
-Only keep the LAST TWO digits and drop leading zeros.
-Examples: 101 → 1, 113 → 13, 207 → 7, 231 → 31, 103 → 3
-
-Return your answer as valid JSON with this exact format (no markdown, no code fences, just raw JSON):
-{"absent": [2, 5], "late": [3, 25]}
-
-Rules:
-- ONLY extract the large, prominent numbers from inside the colored grid cells
-- IGNORE all other text and numbers in the image (headers, dates, batch codes, navigation, buttons, etc.)
-- Only include roll numbers from RED cells in the "absent" array
-- Only include roll numbers from YELLOW/ORANGE cells in the "late" array
-- Do NOT include GREEN (present) roll numbers in the output
-- If there are no absent students, return {"absent": [], "late": []}
-- If there are no late students, return {"absent": [...], "late": []}`;
+CRITICAL INSTRUCTIONS:
+1. Output ONLY a valid JSON object. No markdown, no explanations, no text outside the JSON.
+2. The JSON keys must be the period numbers (as strings, e.g., "1", "2").
+3. The JSON values must be arrays of integers representing the absentee roll numbers (e.g., [4, 24, 71]).
+4. Ignore empty periods. Do not include keys for periods that have no absentees written or are completely blank.
+5. CURLY BRACKETS (Groups): Watch carefully for curly brackets } or lines that group multiple periods together. For example, if period 1 and 2 are grouped together with a bracket pointing to the absentees '4, 24, 71', you MUST duplicate those absentees into BOTH periods in the JSON, like this:
+{ "1": [4, 24, 71], "2": [4, 24, 71] }`;
 
         const imagePart = {
             inlineData: {
@@ -142,13 +118,20 @@ Rules:
             },
         };
 
+        const safetySettings = [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+        ];
+
         let result = null;
         let lastError = null;
 
         for (const key of apiKeys) {
             try {
                 const genAI = new GoogleGenerativeAI(key);
-                const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+                const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash", safetySettings });
                 result = await model.generateContent([prompt, imagePart]);
                 break;
             } catch (error) {
@@ -165,32 +148,35 @@ Rules:
             throw lastError || new Error("All provided Gemini API keys failed.");
         }
 
-        const responseText = result.response.text();
-
-        // Parse the JSON response from Gemini
-        let parsed;
+        let responseText = "";
         try {
-            // Clean up response — remove markdown code fences if present
-            const cleanedText = responseText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-            parsed = JSON.parse(cleanedText);
-        } catch (parseErr) {
-            console.error('Failed to parse AI response as JSON:', responseText);
-            // Fallback: try to extract numbers from the response
-            const numbersMatch = responseText.match(/\d+/g);
-            const rollNumbersString = numbersMatch ? numbersMatch.join(', ') : '';
-            return res.json({ absent: rollNumbersString, late: '' });
+            if (result.response && result.response.candidates && result.response.candidates.length > 0) {
+                const candidate = result.response.candidates[0];
+                if (candidate.finishReason !== 'STOP') {
+                    throw new Error(`AI generation halted. Reason: ${candidate.finishReason}`);
+                }
+            }
+            responseText = result.response.text();
+        } catch (e) {
+            console.error("Failed to extract text from AI response:", JSON.stringify(result));
+            throw new Error("Google AI blocked the image or returned empty content. Try cropping out signatures or names.");
         }
 
-        const absentRolls = (parsed.absent || []).map(r => String(r));
-        const lateRolls = (parsed.late || []).map(r => String(r));
+        responseText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
 
-        res.json({
-            absent: absentRolls.join(', '),
-            late: lateRolls.join(', ')
-        });
+        let parsedData = {};
+        try {
+            parsedData = JSON.parse(responseText);
+        } catch (e) {
+            console.error("AI returned invalid JSON:", responseText);
+            throw new Error("AI returned invalid data format: " + responseText);
+        }
+
+        res.json({ periods: parsedData });
     } catch (error) {
-        console.error('AI Error (logbook-app):', error);
-        res.status(500).json({ error: 'Failed to process image', details: error.message || 'Unknown AI error occurred.' });
+        require('fs').appendFileSync('ai-error.log', '\n' + new Date().toISOString() + ' ' + (error.stack || error.toString()));
+        console.error('AI Error:', error);
+        res.status(500).json({ error: 'Failed to process full page', details: error.message || 'Unknown AI error occurred.' });
     }
 });
 

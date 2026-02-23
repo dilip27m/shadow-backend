@@ -91,39 +91,48 @@ router.post('/create', async (req, res) => {
 });
 
 // @route   PATCH /api/class/:classId/students
-// @desc    Add one roll number to the class without duplicates (Protected)
+// @desc    Add multiple roll numbers to the class without duplicates (Protected)
 router.patch('/:classId/students', auth, async (req, res) => {
     try {
         if (!requireAdminAuth(req, res)) return;
         const { classId } = req.params;
-        const rollNumber = sanitizeRollNumber(req.body.rollNumber);
+
+        // Accept either a single rollNumber or an array of rollNumbers
+        const inputRolls = req.body.rollNumbers || (req.body.rollNumber ? [req.body.rollNumber] : []);
+        console.log("PATCH /students - inputRolls:", inputRolls, typeof inputRolls, Array.isArray(inputRolls));
+        const validRolls = sanitizeRollNumbers(inputRolls);
+        console.log("PATCH /students - validRolls:", validRolls);
 
         if (req.user.classId !== classId) {
+            console.log("PATCH /students - 403 user mismatch");
             return res.status(403).json({ error: 'Unauthorized action' });
         }
 
-        if (!rollNumber) {
-            return res.status(400).json({ error: 'rollNumber is required' });
+        if (validRolls.length === 0) {
+            console.log("PATCH /students - 400 validRolls length is 0");
+            return res.status(400).json({ error: 'At least one valid roll number is required' });
         }
 
         const updateResult = await Classroom.updateOne(
             { _id: classId },
-            { $addToSet: { rollNumbers: rollNumber } }
+            { $addToSet: { rollNumbers: { $each: validRolls } } }
         );
 
         if (updateResult.matchedCount === 0) {
             return res.status(404).json({ error: 'Class not found' });
         }
 
-        if (updateResult.modifiedCount === 0) {
-            return res.status(409).json({ error: 'Roll number already exists in this class' });
-        }
-
         const classroom = await Classroom.findById(classId).select('_id className rollNumbers').lean();
+
+        // Re-sort the roll numbers before returning 
+        const sortedRolls = [...classroom.rollNumbers].sort((a, b) =>
+            String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+        );
+
         res.json({
-            message: 'Student added successfully',
-            rollNumber,
-            rollNumbers: classroom.rollNumbers
+            message: updateResult.modifiedCount > 0 ? 'Students added successfully' : 'All roll numbers already exist in this class',
+            addedCount: validRolls.length,
+            rollNumbers: sortedRolls
         });
     } catch (err) {
         console.error(err);
@@ -213,15 +222,30 @@ router.post('/:id/add-subject', auth, async (req, res) => {
             return res.status(403).json({ error: 'Unauthorized action' });
         }
 
-        const classroom = await Classroom.findById(classId);
-        if (!classroom) return res.status(404).json({ error: 'Class not found' });
+        const existingClass = await Classroom.findById(classId).select('subjects').lean();
+        if (!existingClass) return res.status(404).json({ error: 'Class not found' });
 
-        classroom.subjects.push({ name });
-        await classroom.save();
+        const lowercaseName = name.trim().toLowerCase();
+        const isDuplicate = existingClass.subjects.some(sub => sub.name.toLowerCase() === lowercaseName);
+        if (isDuplicate) {
+            // Return 200 instead of 400 to prevent the browser from logging a red network error to the console,
+            // but still pass the 'error' property so the frontend can display the notification bubble.
+            return res.status(200).json({ error: 'Subject already exists' });
+        }
+
+        const updatedClassroom = await Classroom.findOneAndUpdate(
+            { _id: classId },
+            { $push: { subjects: { name: name.trim() } } },
+            { new: true } // Returns the modified document
+        );
+
+        if (!updatedClassroom) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
 
         res.json({
             message: 'Subject added successfully!',
-            subject: classroom.subjects[classroom.subjects.length - 1]
+            subject: updatedClassroom.subjects[updatedClassroom.subjects.length - 1]
         });
     } catch (err) {
         console.error(err);
@@ -243,20 +267,36 @@ router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
             return res.status(403).json({ error: 'Unauthorized action' });
         }
 
-        const classroom = await Classroom.findById(classId);
-        if (!classroom) return res.status(404).json({ error: 'Class not found' });
+        const existingClass = await Classroom.findById(classId).select('subjects').lean();
+        if (!existingClass) return res.status(404).json({ error: 'Class not found' });
 
-        const subject = classroom.subjects.id(subjectId);
-        if (!subject) return res.status(404).json({ error: 'Subject not found' });
+        const lowercaseName = name.trim().toLowerCase();
+        const isDuplicate = existingClass.subjects.some(sub =>
+            sub._id.toString() !== subjectId && sub.name.toLowerCase() === lowercaseName
+        );
+        if (isDuplicate) {
+            // Return 200 instead of 400 to prevent the browser from logging a red network error to the console
+            return res.status(200).json({ error: 'Subject already exists' });
+        }
 
-        subject.name = name;
-        await classroom.save();
+        const updatedClassroom = await Classroom.findOneAndUpdate(
+            { _id: classId, 'subjects._id': subjectId },
+            { $set: { 'subjects.$.name': name.trim() } },
+            { new: true }
+        );
+
+        if (!updatedClassroom) {
+            return res.status(404).json({ error: 'Class or Subject not found' });
+        }
+
+        const subject = updatedClassroom.subjects.find(s => s._id.toString() === subjectId);
 
         res.json({
             message: 'Subject updated successfully!',
             subject: subject
         });
     } catch (err) {
+        require('fs').appendFileSync('class-error.log', '\n' + new Date().toISOString() + ' EDIT: ' + (err.stack || err.toString()));
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
     }
@@ -276,21 +316,29 @@ router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
             return res.status(403).json({ error: 'Unauthorized action' });
         }
 
-        const classroom = await Classroom.findById(classId);
-        if (!classroom) return res.status(404).json({ error: 'Class not found' });
+        // First, explicitly check how many subjects exist before pulling, so we don't delete the last one.
+        const classroomCheck = await Classroom.findById(classId).select('subjects').lean();
+        if (!classroomCheck) return res.status(404).json({ error: 'Class not found' });
 
-        // Check if there's only one subject left
-        if (classroom.subjects.length === 1) {
+        if (classroomCheck.subjects.length <= 1) {
             return res.status(400).json({ error: 'Cannot delete the last subject' });
         }
 
-        classroom.subjects.pull(subjectId);
-        await classroom.save();
+        const updatedClassroom = await Classroom.findOneAndUpdate(
+            { _id: classId },
+            { $pull: { subjects: { _id: subjectId } } },
+            { new: true }
+        );
+
+        if (!updatedClassroom) {
+            return res.status(404).json({ error: 'Failed to delete. Class not found.' });
+        }
 
         res.json({
             message: 'Subject deleted successfully!'
         });
     } catch (err) {
+        require('fs').appendFileSync('class-error.log', '\n' + new Date().toISOString() + ' DEL: ' + (err.stack || err.toString()));
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
     }
