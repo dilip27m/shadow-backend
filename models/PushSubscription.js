@@ -22,6 +22,8 @@ const PushSubscriptionSchema = new mongoose.Schema({
 
 // Index for fast class-based lookup when broadcasting
 PushSubscriptionSchema.index({ classId: 1 });
+// Compound index for fast per-student lookup
+PushSubscriptionSchema.index({ classId: 1, rollNumber: 1 });
 // Unique constraint: one subscription per endpoint per class
 PushSubscriptionSchema.index({ classId: 1, 'subscription.endpoint': 1 }, { unique: true });
 

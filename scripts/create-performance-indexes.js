@@ -31,6 +31,21 @@ async function run() {
         .collection('announcements')
         .createIndex({ classId: 1, createdAt: -1 }, { name: 'classId_1_createdAt_-1' });
 
+    // Student reports lookup
+    results.reportStudentLookup = await db
+        .collection('reports')
+        .createIndex({ classId: 1, studentRoll: 1 }, { name: 'classId_1_studentRoll_1' });
+
+    // Push notification per-student lookup
+    results.pushStudentLookup = await db
+        .collection('pushsubscriptions')
+        .createIndex({ classId: 1, rollNumber: 1 }, { name: 'classId_1_rollNumber_1' });
+
+    // Admin daily attendance lookup
+    results.attendanceDaily = await db
+        .collection('attendances')
+        .createIndex({ classId: 1, date: 1 }, { name: 'classId_1_date_1', unique: true });
+
     console.log(JSON.stringify(results, null, 2));
     await mongoose.disconnect();
 }
