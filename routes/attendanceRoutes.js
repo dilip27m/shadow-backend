@@ -91,7 +91,10 @@ router.post('/mark', auth, async (req, res) => {
                     sendPushToClass(classId, {
                         title: `📋 Attendance Updated`,
                         body: `${name} — ${dateLabel}`,
-                        url: '/'
+                        // Link each subscriber to their own attendance page
+                        urlBuilder: (sub) => sub.rollNumber
+                            ? `/student/${sub.classId}/${sub.rollNumber}`
+                            : '/'
                     });
                 })
                 .catch(() => { });

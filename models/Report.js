@@ -35,6 +35,10 @@ const ReportSchema = new mongoose.Schema({
     adminResponse: {
         type: String,
         maxlength: 500
+    },
+    resolvedAt: {
+        type: Date,
+        default: null
     }
 }, { timestamps: true });
 
@@ -42,5 +46,7 @@ const ReportSchema = new mongoose.Schema({
 ReportSchema.index({ classId: 1, status: 1 });
 ReportSchema.index({ classId: 1, studentRoll: 1 });
 ReportSchema.index({ classId: 1, createdAt: -1 });
+// TTL: auto-delete reports 7 days after admin responds
+ReportSchema.index({ resolvedAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60, sparse: true });
 
 module.exports = mongoose.model('Report', ReportSchema);

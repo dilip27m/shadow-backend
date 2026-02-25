@@ -3,7 +3,76 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // Import bcrypt for security
 const Classroom = require('../models/Classroom');
+const Attendance = require('../models/Attendance');
+const Announcement = require('../models/Announcement');
+const Report = require('../models/Report');
+const PushSubscription = require('../models/PushSubscription');
 const auth = require('../middleware/auth');
+
+// ─── Super Admin Middleware ───────────────────────────────────────────────────
+const superAdminAuth = (req, res, next) => {
+    const key = req.headers['x-super-admin-key'];
+    if (!key || key !== process.env.SUPER_ADMIN_MASTER_KEY) {
+        return res.status(401).json({ error: 'Unauthorized: Invalid Super Admin Key' });
+    }
+    next();
+};
+
+// @route   GET /api/class/super-admin/classes
+// @desc    List all classes (Super Admin only)
+router.get('/super-admin/classes', superAdminAuth, async (req, res) => {
+    try {
+        const classes = await Classroom.find({})
+            .select('_id className createdAt rollNumbers')
+            .sort({ createdAt: -1 })
+            .lean();
+        res.json({ classes });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// @route   DELETE /api/class/super-admin/purge/:classId
+// @desc    Cascade delete a class and ALL its associated data (Super Admin only)
+router.delete('/super-admin/purge/:classId', superAdminAuth, async (req, res) => {
+    try {
+        const { classId } = req.params;
+
+        // Verify the class exists first
+        const classroom = await Classroom.findById(classId).select('className').lean();
+        if (!classroom) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        // Cascade delete across all collections
+        const [attResult, annResult, repResult, pushResult] = await Promise.all([
+            Attendance.deleteMany({ classId }),
+            Announcement.deleteMany({ classId }),
+            Report.deleteMany({ classId }),
+            PushSubscription.deleteMany({ classId }),
+        ]);
+
+        // Finally delete the classroom itself
+        await Classroom.findByIdAndDelete(classId);
+
+        res.json({
+            message: `Class "${classroom.className}" and all associated data purged successfully.`,
+            className: classroom.className,
+            deleted: {
+                attendances: attResult.deletedCount,
+                announcements: annResult.deletedCount,
+                reports: repResult.deletedCount,
+                pushSubscriptions: pushResult.deletedCount,
+            },
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+
 
 const sanitizeRollNumber = (value) => {
     if (value === undefined || value === null) return null;
@@ -99,17 +168,13 @@ router.patch('/:classId/students', auth, async (req, res) => {
 
         // Accept either a single rollNumber or an array of rollNumbers
         const inputRolls = req.body.rollNumbers || (req.body.rollNumber ? [req.body.rollNumber] : []);
-        console.log("PATCH /students - inputRolls:", inputRolls, typeof inputRolls, Array.isArray(inputRolls));
         const validRolls = sanitizeRollNumbers(inputRolls);
-        console.log("PATCH /students - validRolls:", validRolls);
 
         if (req.user.classId !== classId) {
-            console.log("PATCH /students - 403 user mismatch");
             return res.status(403).json({ error: 'Unauthorized action' });
         }
 
         if (validRolls.length === 0) {
-            console.log("PATCH /students - 400 validRolls length is 0");
             return res.status(400).json({ error: 'At least one valid roll number is required' });
         }
 
