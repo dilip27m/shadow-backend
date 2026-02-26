@@ -81,6 +81,7 @@ router.post('/mark', auth, async (req, res) => {
         res.json({ message: 'Attendance Saved Successfully!', data: updatedRecord });
 
         // Send push notifications (non-blocking, fire-and-forget)
+        /*
         if (normalizedPeriods.length > 0) {
             Classroom.findById(classId).select('className').lean()
                 .then(cls => {
@@ -91,11 +92,15 @@ router.post('/mark', auth, async (req, res) => {
                     sendPushToClass(classId, {
                         title: `📋 Attendance Updated`,
                         body: `${name} — ${dateLabel}`,
-                        url: '/'
+                        // Link each subscriber to their own attendance page
+                        urlBuilder: (sub) => sub.rollNumber
+                            ? `/student/${sub.classId}/${sub.rollNumber}`
+                            : '/'
                     });
                 })
                 .catch(() => { });
         }
+        */
 
     } catch (err) {
         console.error(err);
