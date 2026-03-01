@@ -1,13 +1,16 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs'); // Import bcrypt for security
+const { z } = require('zod');
 const Classroom = require('../models/Classroom');
+const Student = require('../models/Student');
 const Attendance = require('../models/Attendance');
 const Announcement = require('../models/Announcement');
 const Report = require('../models/Report');
 const PushSubscription = require('../models/PushSubscription');
 const auth = require('../middleware/auth');
+const { generateStudentProvisioning } = require('../utils/generateStudentProvisioning');
 
 // ─── Super Admin Middleware ───────────────────────────────────────────────────
 const superAdminAuth = (req, res, next) => {
@@ -18,82 +21,31 @@ const superAdminAuth = (req, res, next) => {
     next();
 };
 
-// @route   GET /api/class/super-admin/classes
-// @desc    List all classes (Super Admin only)
-router.get('/super-admin/classes', superAdminAuth, async (req, res) => {
-    try {
-        const classes = await Classroom.find({})
-            .select('_id className createdAt rollNumbers')
-            .sort({ createdAt: -1 })
-            .lean();
-        res.json({ classes });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server Error' });
-    }
+// ─── Zod Validation Schemas ──────────────────────────────────────────────────
+
+const createClassSchema = z.object({
+    className: z.string().trim().min(1, 'Class name is required'),
+    semester: z.number().int().min(1, 'Semester must be between 1 and 8').max(8, 'Semester must be between 1 and 8'),
+    academicYear: z.string().trim().min(1, 'Academic year is required'),
+    adminEmail: z.string().trim().toLowerCase().min(1, 'Admin email is required').email('Invalid email format'),
+    adminPassword: z.string().min(8, 'Admin password must be at least 8 characters'),
+    subjects: z.array(z.object({
+        name: z.string().trim().min(1, 'Subject name is required'),
+        code: z.string().trim().optional()
+    })).optional().default([]),
+    rangeConfig: z.object({
+        start: z.string().trim().min(1, 'Start roll number is required'),
+        end: z.string().trim().min(1, 'End roll number is required'),
+        emailTemplate: z.string().trim().optional()
+    })
 });
 
-// @route   DELETE /api/class/super-admin/purge/:classId
-// @desc    Cascade delete a class and ALL its associated data (Super Admin only)
-router.delete('/super-admin/purge/:classId', superAdminAuth, async (req, res) => {
-    try {
-        const { classId } = req.params;
-
-        // Verify the class exists first
-        const classroom = await Classroom.findById(classId).select('className').lean();
-        if (!classroom) {
-            return res.status(404).json({ error: 'Class not found' });
-        }
-
-        // Cascade delete across all collections
-        const [attResult, annResult, repResult, pushResult] = await Promise.all([
-            Attendance.deleteMany({ classId }),
-            Announcement.deleteMany({ classId }),
-            Report.deleteMany({ classId }),
-            PushSubscription.deleteMany({ classId }),
-        ]);
-
-        // Finally delete the classroom itself
-        await Classroom.findByIdAndDelete(classId);
-
-        res.json({
-            message: `Class "${classroom.className}" and all associated data purged successfully.`,
-            className: classroom.className,
-            deleted: {
-                attendances: attResult.deletedCount,
-                announcements: annResult.deletedCount,
-                reports: repResult.deletedCount,
-                pushSubscriptions: pushResult.deletedCount,
-            },
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
-
-
-
-const sanitizeRollNumber = (value) => {
-    if (value === undefined || value === null) return null;
-    const cleaned = String(value).trim();
-    return cleaned || null;
-};
-
-const sanitizeRollNumbers = (values) => {
-    if (!Array.isArray(values)) return [];
-    const seen = new Set();
-    const normalized = [];
-
-    values.forEach((value) => {
-        const cleaned = sanitizeRollNumber(value);
-        if (cleaned && !seen.has(cleaned)) {
-            seen.add(cleaned);
-            normalized.push(cleaned);
-        }
-    });
-
-    return normalized;
+// ─── Helper: format Zod errors ───────────────────────────────────────────────
+const formatZodErrors = (error) => {
+    return error.issues.map(issue => ({
+        path: issue.path.join('.'),
+        message: issue.message
+    }));
 };
 
 const requireAdminAuth = (req, res) => {
@@ -104,53 +56,214 @@ const requireAdminAuth = (req, res) => {
     return true;
 };
 
-// @route   POST /api/class/create
-// @desc    Create a new Classroom (Protected)
-router.post('/create', async (req, res) => {
-    try {
-        const { className, adminPin, rollNumbers, subjects } = req.body;
-        const normalizedRollNumbers = sanitizeRollNumbers(rollNumbers);
+// ═════════════════════════════════════════════════════════════════════════════
+//  SUPER ADMIN ROUTES
+// ═════════════════════════════════════════════════════════════════════════════
 
-        if (!className || !adminPin || normalizedRollNumbers.length === 0) {
-            return res.status(400).json({ error: 'Please provide all required fields' });
+// @route   GET /api/class/super-admin/classes
+// @desc    List all classes (Super Admin only)
+router.get('/super-admin/classes', superAdminAuth, async (req, res) => {
+    try {
+        const classes = await Classroom.find({})
+            .select('_id className semester academicYear isApproved createdAt')
+            .sort({ createdAt: -1 })
+            .lean();
+        res.json({ classes });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// @route   PATCH /api/class/approve/:classId
+// @desc    Approve a pending class and bulk-create unclaimed Student documents (Super Admin only)
+router.patch('/approve/:classId', superAdminAuth, async (req, res) => {
+    const session = await mongoose.startSession();
+
+    try {
+        session.startTransaction();
+
+        // 1. Find the pending classroom
+        const classroom = await Classroom.findById(req.params.classId).session(session);
+
+        if (!classroom) {
+            await session.abortTransaction();
+            return res.status(404).json({ error: 'Classroom not found' });
         }
 
-        // Check for case-insensitive duplicate: "CSE B", "cse b", "Cse B" → same class
-        const _className = className.trim();
-        const existing = await Classroom.findOne({ className: _className }).collation({ locale: 'en', strength: 2 }).select('_id').lean();
+        if (classroom.isApproved) {
+            await session.abortTransaction();
+            return res.status(400).json({ error: 'Classroom is already approved' });
+        }
+
+        // 2. Generate student provisioning with secret keys
+        let provisionedStudents;
+        try {
+            provisionedStudents = await generateStudentProvisioning(
+                classroom.rangeConfig.start,
+                classroom.rangeConfig.end
+            );
+        } catch (genErr) {
+            await session.abortTransaction();
+            return res.status(400).json({ error: `Student provisioning failed: ${genErr.message}` });
+        }
+
+        if (provisionedStudents.length === 0) {
+            await session.abortTransaction();
+            return res.status(400).json({ error: 'Generated student list is empty' });
+        }
+
+        // 3. Approve the classroom
+        classroom.isApproved = true;
+        await classroom.save({ session });
+
+        // 4. Bulk-insert Student documents with hashed secret keys
+        const studentDocs = provisionedStudents.map(({ rollNumber, hashedKey }) => ({
+            rollNumber,
+            classId: classroom._id,
+            secretKey: hashedKey, // Already hashed by generateStudentProvisioning
+            isClaimed: false
+        }));
+
+        // Use rawResult to skip pre-save hooks (keys are already hashed)
+        await Student.insertMany(studentDocs, { session });
+
+        // 5. Commit
+        await session.commitTransaction();
+
+        // 6. Return plain-text key list (ONE-TIME ONLY — never stored in plain text)
+        const keyList = provisionedStudents.map(({ rollNumber, plainKey }) => ({
+            rollNumber,
+            secretKey: plainKey
+        }));
+
+        res.json({
+            message: `Classroom "${classroom.className}" approved. ${provisionedStudents.length} student accounts provisioned.`,
+            classId: classroom._id,
+            studentsCreated: provisionedStudents.length,
+            keyList // ⚠️ Plain-text keys — distribute to admin, never stored again
+        });
+
+    } catch (err) {
+        await session.abortTransaction();
+
+        if (err.code === 11000) {
+            return res.status(409).json({
+                error: 'Some students already exist in the database. Approval rolled back.',
+                details: err.message
+            });
+        }
+
+        console.error('Approval transaction error:', err);
+        res.status(500).json({ error: 'Server Error' });
+    } finally {
+        session.endSession();
+    }
+});
+
+// @route   DELETE /api/class/super-admin/purge/:classId
+// @desc    Cascade delete a class and ALL its associated data (Super Admin only)
+router.delete('/super-admin/purge/:classId', superAdminAuth, async (req, res) => {
+    try {
+        const { classId } = req.params;
+
+        const classroom = await Classroom.findById(classId).select('className').lean();
+        if (!classroom) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        // Cascade delete across all collections (including Students now)
+        const [attResult, annResult, repResult, pushResult, stuResult] = await Promise.all([
+            Attendance.deleteMany({ classId }),
+            Announcement.deleteMany({ classId }),
+            Report.deleteMany({ classId }),
+            PushSubscription.deleteMany({ classId }),
+            Student.deleteMany({ classId }),
+        ]);
+
+        await Classroom.findByIdAndDelete(classId);
+
+        res.json({
+            message: `Class "${classroom.className}" and all associated data purged successfully.`,
+            className: classroom.className,
+            deleted: {
+                attendances: attResult.deletedCount,
+                announcements: annResult.deletedCount,
+                reports: repResult.deletedCount,
+                pushSubscriptions: pushResult.deletedCount,
+                students: stuResult.deletedCount,
+            },
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  CLASS CREATION
+// ═════════════════════════════════════════════════════════════════════════════
+
+// @route   POST /api/class/create
+// @desc    Create a new Classroom (pending approval) with student range config
+router.post('/create', async (req, res) => {
+    try {
+        // 1. Validate request body with Zod
+        const parsed = createClassSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({
+                error: 'Validation failed',
+                details: formatZodErrors(parsed.error)
+            });
+        }
+
+        const { className, semester, academicYear, adminEmail, adminPassword, subjects, rangeConfig } = parsed.data;
+
+        // 2. Validate the roll-number range eagerly (fail fast)
+        let studentPreview;
+        try {
+            studentPreview = await generateStudentProvisioning(rangeConfig.start, rangeConfig.end);
+        } catch (rangeErr) {
+            return res.status(400).json({ error: rangeErr.message });
+        }
+
+        // 3. Check for case-insensitive duplicate
+        const existing = await Classroom.findOne({ className })
+            .collation({ locale: 'en', strength: 2 })
+            .select('_id')
+            .lean();
+
         if (existing) {
             return res.status(400).json({ error: 'Class Name already exists! Please choose another.' });
         }
 
-        // 1. Hash the PIN before saving
-        const salt = await bcrypt.genSalt(10);
-        const hashedPin = await bcrypt.hash(adminPin, salt);
-
+        // 4. Save classroom (unapproved, with admin credentials)
         const newClass = new Classroom({
-            className: _className,
-            adminPin: hashedPin, // Store the hash, not the plain text
-            rollNumbers: normalizedRollNumbers,
-            subjects
+            className,
+            semester,
+            academicYear,
+            adminEmail,
+            adminPassword,
+            subjects,
+            rangeConfig,
+            isApproved: false
         });
 
         const savedClass = await newClass.save();
 
-        // Generate token immediately for the creator
-        const token = jwt.sign(
-            { classId: savedClass._id, role: 'admin' },
-            process.env.JWT_SECRET,
-            { expiresIn: '30d' }
-        );
+        // 5. Placeholder: send verification email to admin's college email
+        console.log(`[EMAIL PLACEHOLDER] Class "${className}" created, pending Super Admin approval.`);
 
         res.status(201).json({
-            message: 'Class Created!',
+            message: 'Class created successfully! Pending Super Admin approval.',
             classId: savedClass._id,
-            token,
-            data: savedClass
+            className: savedClass.className,
+            isApproved: false,
+            studentCount: studentPreview.length,
+            studentPreview: studentPreview.slice(0, 5) // Show first 5 as preview
         });
 
     } catch (err) {
-        // 2. Handle Duplicate Class Name Error
         if (err.code === 11000) {
             return res.status(400).json({ error: 'Class Name already exists! Please choose another.' });
         }
@@ -159,120 +272,9 @@ router.post('/create', async (req, res) => {
     }
 });
 
-// @route   PATCH /api/class/:classId/students
-// @desc    Add multiple roll numbers to the class without duplicates (Protected)
-router.patch('/:classId/students', auth, async (req, res) => {
-    try {
-        if (!requireAdminAuth(req, res)) return;
-        const { classId } = req.params;
-
-        // Accept either a single rollNumber or an array of rollNumbers
-        const inputRolls = req.body.rollNumbers || (req.body.rollNumber ? [req.body.rollNumber] : []);
-        const validRolls = sanitizeRollNumbers(inputRolls);
-
-        if (req.user.classId !== classId) {
-            return res.status(403).json({ error: 'Unauthorized action' });
-        }
-
-        if (validRolls.length === 0) {
-            return res.status(400).json({ error: 'At least one valid roll number is required' });
-        }
-
-        const updateResult = await Classroom.updateOne(
-            { _id: classId },
-            { $addToSet: { rollNumbers: { $each: validRolls } } }
-        );
-
-        if (updateResult.matchedCount === 0) {
-            return res.status(404).json({ error: 'Class not found' });
-        }
-
-        const classroom = await Classroom.findById(classId).select('_id className rollNumbers').lean();
-
-        // Re-sort the roll numbers before returning 
-        const sortedRolls = [...classroom.rollNumbers].sort((a, b) =>
-            String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
-        );
-
-        res.json({
-            message: updateResult.modifiedCount > 0 ? 'Students added successfully' : 'All roll numbers already exist in this class',
-            addedCount: validRolls.length,
-            rollNumbers: sortedRolls
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
-
-// @route   POST /api/class/admin-login
-// @desc    Verify Admin PIN and Return Token
-router.post('/admin-login', async (req, res) => {
-    try {
-        const { className, adminPin } = req.body;
-        const _className = (className || '').trim();
-
-        const classroom = await Classroom.findOne({ className: _className })
-            .collation({ locale: 'en', strength: 2 })
-            .select('className adminPin')
-            .lean();
-
-        if (!classroom) {
-            return res.status(404).json({ error: 'Class not found' });
-        }
-
-        // 3. Compare the provided PIN with the stored Hash
-        const isMatch = await bcrypt.compare(adminPin, classroom.adminPin);
-
-        if (!isMatch) {
-            return res.status(401).json({ error: 'Invalid PIN' });
-        }
-
-        // Generate JWT Token
-        const token = jwt.sign(
-            { classId: classroom._id, role: 'admin' },
-            process.env.JWT_SECRET,
-            { expiresIn: '30d' }
-        );
-
-        res.json({
-            message: 'Login successful',
-            classId: classroom._id,
-            token
-        });
-    } catch (err) {
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
-
-// @route   POST /api/class/verify-token
-// @desc    Verify existing token and issue a fresh one (auto-renewal)
-router.post('/verify-token', auth, async (req, res) => {
-    try {
-        if (!requireAdminAuth(req, res)) return;
-        // Token is already verified by auth middleware, req.user has { classId }
-        const classroom = await Classroom.findById(req.user.classId).select('className').lean();
-        if (!classroom) {
-            return res.status(404).json({ error: 'Class not found' });
-        }
-
-        // Issue a fresh 30-day token
-        const newToken = jwt.sign(
-            { classId: classroom._id, role: 'admin' },
-            process.env.JWT_SECRET,
-            { expiresIn: '30d' }
-        );
-
-        res.json({
-            valid: true,
-            classId: classroom._id,
-            className: classroom.className,
-            token: newToken
-        });
-    } catch (err) {
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
+// ═════════════════════════════════════════════════════════════════════════════
+//  SUBJECT MANAGEMENT (Active — works with new schema)
+// ═════════════════════════════════════════════════════════════════════════════
 
 // @route   POST /api/class/:id/add-subject
 // @desc    Add a new subject (Protected)
@@ -282,7 +284,6 @@ router.post('/:id/add-subject', auth, async (req, res) => {
         const { name } = req.body;
         const classId = req.params.id;
 
-        // Verify user owns this class
         if (req.user.classId !== classId) {
             return res.status(403).json({ error: 'Unauthorized action' });
         }
@@ -293,15 +294,13 @@ router.post('/:id/add-subject', auth, async (req, res) => {
         const lowercaseName = name.trim().toLowerCase();
         const isDuplicate = existingClass.subjects.some(sub => sub.name.toLowerCase() === lowercaseName);
         if (isDuplicate) {
-            // Return 200 instead of 400 to prevent the browser from logging a red network error to the console,
-            // but still pass the 'error' property so the frontend can display the notification bubble.
             return res.status(200).json({ error: 'Subject already exists' });
         }
 
         const updatedClassroom = await Classroom.findOneAndUpdate(
             { _id: classId },
             { $push: { subjects: { name: name.trim() } } },
-            { new: true } // Returns the modified document
+            { new: true }
         );
 
         if (!updatedClassroom) {
@@ -327,7 +326,6 @@ router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
         const classId = req.params.id;
         const subjectId = req.params.subjectId;
 
-        // Verify user owns this class
         if (req.user.classId !== classId) {
             return res.status(403).json({ error: 'Unauthorized action' });
         }
@@ -340,7 +338,6 @@ router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
             sub._id.toString() !== subjectId && sub.name.toLowerCase() === lowercaseName
         );
         if (isDuplicate) {
-            // Return 200 instead of 400 to prevent the browser from logging a red network error to the console
             return res.status(200).json({ error: 'Subject already exists' });
         }
 
@@ -361,12 +358,10 @@ router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
             subject: subject
         });
     } catch (err) {
-        require('fs').appendFileSync('class-error.log', '\n' + new Date().toISOString() + ' EDIT: ' + (err.stack || err.toString()));
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
     }
 });
-
 
 // @route   DELETE /api/class/:id/delete-subject/:subjectId
 // @desc    Delete a subject (Protected)
@@ -376,12 +371,10 @@ router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
         const classId = req.params.id;
         const subjectId = req.params.subjectId;
 
-        // Verify user owns this class
         if (req.user.classId !== classId) {
             return res.status(403).json({ error: 'Unauthorized action' });
         }
 
-        // First, explicitly check how many subjects exist before pulling, so we don't delete the last one.
         const classroomCheck = await Classroom.findById(classId).select('subjects').lean();
         if (!classroomCheck) return res.status(404).json({ error: 'Class not found' });
 
@@ -399,110 +392,28 @@ router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
             return res.status(404).json({ error: 'Failed to delete. Class not found.' });
         }
 
-        res.json({
-            message: 'Subject deleted successfully!'
-        });
-    } catch (err) {
-        require('fs').appendFileSync('class-error.log', '\n' + new Date().toISOString() + ' DEL: ' + (err.stack || err.toString()));
-        console.error(err);
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
-
-
-
-// @route   PATCH /api/class/:classId/block-student
-// @desc    Block a roll number from student login (privacy opt-out)
-router.patch('/:classId/block-student', auth, async (req, res) => {
-    try {
-        if (!requireAdminAuth(req, res)) return;
-        const { classId } = req.params;
-        const rollNumber = sanitizeRollNumber(req.body.rollNumber);
-
-        if (req.user.classId !== classId) {
-            return res.status(403).json({ error: 'Unauthorized action' });
-        }
-
-        if (!rollNumber) {
-            return res.status(400).json({ error: 'rollNumber is required' });
-        }
-
-        const result = await Classroom.updateOne(
-            { _id: classId },
-            { $addToSet: { blockedRollNumbers: rollNumber } }
-        );
-
-        if (result.matchedCount === 0) {
-            return res.status(404).json({ error: 'Class not found' });
-        }
-
-        const classroom = await Classroom.findById(classId).select('blockedRollNumbers').lean();
-        res.json({
-            message: `Roll number ${rollNumber} blocked successfully`,
-            blockedRollNumbers: classroom.blockedRollNumbers || []
-        });
+        res.json({ message: 'Subject deleted successfully!' });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
     }
 });
 
-// @route   PATCH /api/class/:classId/unblock-student
-// @desc    Unblock a roll number (re-enable student login)
-router.patch('/:classId/unblock-student', auth, async (req, res) => {
-    try {
-        if (!requireAdminAuth(req, res)) return;
-        const { classId } = req.params;
-        const rollNumber = sanitizeRollNumber(req.body.rollNumber);
-
-        if (req.user.classId !== classId) {
-            return res.status(403).json({ error: 'Unauthorized action' });
-        }
-
-        if (!rollNumber) {
-            return res.status(400).json({ error: 'rollNumber is required' });
-        }
-
-        const result = await Classroom.updateOne(
-            { _id: classId },
-            { $pull: { blockedRollNumbers: rollNumber } }
-        );
-
-        if (result.matchedCount === 0) {
-            return res.status(404).json({ error: 'Class not found' });
-        }
-
-        const classroom = await Classroom.findById(classId).select('blockedRollNumbers').lean();
-        res.json({
-            message: `Roll number ${rollNumber} unblocked successfully`,
-            blockedRollNumbers: classroom.blockedRollNumbers || []
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
-
-
-// --- Public Routes (No Auth Needed) ---
+// ═════════════════════════════════════════════════════════════════════════════
+//  PUBLIC ROUTES
+// ═════════════════════════════════════════════════════════════════════════════
 
 // @route   GET /api/class/stats/all
 // @desc    Get system statistics (total classes and students)
 // IMPORTANT: Must be defined BEFORE /:id to avoid route collision
 router.get('/stats/all', async (req, res) => {
     try {
-        const totalClasses = await Classroom.countDocuments();
-        const classrooms = await Classroom.find({}, 'rollNumbers totalStudents').lean();
-        const totalStudents = classrooms.reduce((sum, c) => {
-            if (Array.isArray(c.rollNumbers)) return sum + c.rollNumbers.length;
-            if (Number.isFinite(c.totalStudents)) return sum + c.totalStudents;
-            return sum;
-        }, 0);
+        const [totalClasses, totalStudents] = await Promise.all([
+            Classroom.countDocuments({ isApproved: true }),
+            Student.countDocuments()
+        ]);
 
-        res.json({
-            totalClasses,
-            totalStudents
-        });
+        res.json({ totalClasses, totalStudents });
     } catch (err) {
         res.status(500).json({ error: 'Server Error' });
     }
@@ -511,7 +422,10 @@ router.get('/stats/all', async (req, res) => {
 router.get('/lookup/:className', async (req, res) => {
     try {
         const className = req.params.className;
-        const classroom = await Classroom.findOne({ className }).collation({ locale: 'en', strength: 2 }).select('_id className').lean();
+        const classroom = await Classroom.findOne({ className, isApproved: true })
+            .collation({ locale: 'en', strength: 2 })
+            .select('_id className')
+            .lean();
 
         if (!classroom) {
             return res.status(404).json({ error: 'Class not found' });
@@ -526,10 +440,53 @@ router.get('/lookup/:className', async (req, res) => {
 // Catch-all by ID — must be LAST among GET routes
 router.get('/:id', async (req, res) => {
     try {
-        const classroom = await Classroom.findById(req.params.id).select('-adminPin').lean();
+        const classroom = await Classroom.findById(req.params.id)
+            .select('-rangeConfig')
+            .lean();
         if (!classroom) return res.status(404).json({ error: 'Class not found' });
         res.json(classroom);
     } catch (err) {
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  [LEGACY] Routes below are preserved for reference during migration.
+//  They depend on the old schema fields (adminPin, rollNumbers, blockedRollNumbers)
+//  which have been removed. Uncomment and adapt when needed.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/*
+// [LEGACY] @route POST /api/class/admin-login
+// [LEGACY] @desc  Verify Admin PIN and Return Token
+router.post('/admin-login', async (req, res) => { ... });
+
+// [LEGACY] @route POST /api/class/verify-token
+router.post('/verify-token', auth, async (req, res) => { ... });
+
+// [LEGACY] @route PATCH /api/class/:classId/students
+// [LEGACY] @desc  Add multiple roll numbers to the class
+router.patch('/:classId/students', auth, async (req, res) => { ... });
+
+// [LEGACY] @route PATCH /api/class/:classId/block-student
+router.patch('/:classId/block-student', auth, async (req, res) => { ... });
+
+// [LEGACY] @route PATCH /api/class/:classId/unblock-student
+router.patch('/:classId/unblock-student', auth, async (req, res) => { ... });
+*/
+
+// @route   GET /api/class/public/list
+// @desc    Return approved classes (name + id only) for public dropdowns
+router.get('/public/list', async (req, res) => {
+    try {
+        const classes = await Classroom.find({ isApproved: true })
+            .select('_id className')
+            .sort({ className: 1 })
+            .lean();
+
+        res.json({ classes });
+    } catch (err) {
+        console.error('Public class list error:', err);
         res.status(500).json({ error: 'Server Error' });
     }
 });
