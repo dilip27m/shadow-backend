@@ -24,7 +24,7 @@ const superAdminAuth = (req, res, next) => {
 router.get('/super-admin/classes', superAdminAuth, async (req, res) => {
     try {
         const classes = await Classroom.find({})
-            .select('_id className createdAt rollNumbers')
+            .select('_id className createdAt rollNumbers totalStudents')
             .sort({ createdAt: -1 })
             .lean();
         res.json({ classes });
