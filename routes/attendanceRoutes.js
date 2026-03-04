@@ -5,7 +5,7 @@ const Attendance = require('../models/Attendance');
 const Classroom = require('../models/Classroom');
 const StudentRecord = require('../models/StudentRecord');
 const auth = require('../middleware/auth');
-const { sendPushToClass } = require('../utils/pushService');
+// const { sendPushToClass } = require('../utils/pushService');
 
 // FIX: Extract date string directly to avoid timezone-driven day shifts
 const normalizeDate = (dateString) => {

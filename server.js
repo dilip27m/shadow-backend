@@ -19,7 +19,6 @@ const { startReminderCron } = require('./scripts/reminderCron');
 const app = express();
 
 // ─── CORS — must come before Helmet ───
-// ─── CORS — must come before Helmet ───
 const corsOptions = {
     origin: true, // Reflects the request origin, allowing any origin
     credentials: true, // Required for cookies/authorization headers

@@ -376,7 +376,6 @@ router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
             subject: subject
         });
     } catch (err) {
-        require('fs').appendFileSync('class-error.log', '\n' + new Date().toISOString() + ' EDIT: ' + (err.stack || err.toString()));
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
     }
@@ -424,7 +423,6 @@ router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
             message: 'Subject deleted successfully!'
         });
     } catch (err) {
-        require('fs').appendFileSync('class-error.log', '\n' + new Date().toISOString() + ' DEL: ' + (err.stack || err.toString()));
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
     }
