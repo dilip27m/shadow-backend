@@ -174,7 +174,6 @@ CRITICAL INSTRUCTIONS:
 
         res.json({ periods: parsedData });
     } catch (error) {
-        require('fs').appendFileSync('ai-error.log', '\n' + new Date().toISOString() + ' ' + (error.stack || error.toString()));
         console.error('AI Error:', error);
         res.status(500).json({ error: 'Failed to process full page', details: error.message || 'Unknown AI error occurred.' });
     }
