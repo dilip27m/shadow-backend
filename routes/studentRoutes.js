@@ -116,11 +116,12 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
         // Build report from pre-computed subjects in StudentRecord
         const statsMap = {};
         (studentRecord?.subjects || []).forEach(stat => {
-            statsMap[stat.subjectId] = stat;
+            statsMap[String(stat.subjectId)] = stat;
         });
 
         const finalReport = classroom.subjects.map(subject => {
-            const stat = statsMap[subject._id.toString()] || { totalClasses: 0, attendedClasses: 0 };
+            // Need to stringify the ObjectId to match the stored string key
+            const stat = statsMap[String(subject._id)] || { totalClasses: 0, attendedClasses: 0 };
             const { totalClasses, attendedClasses } = stat;
             const percentage = totalClasses === 0 ? 0 : parseFloat(((attendedClasses / totalClasses) * 100).toFixed(1));
 
