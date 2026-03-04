@@ -1,7 +1,9 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
 const Attendance = require('../models/Attendance');
 const Classroom = require('../models/Classroom');
+const StudentRecord = require('../models/StudentRecord');
 const auth = require('../middleware/auth');
 const { sendPushToClass } = require('../utils/pushService');
 
@@ -48,8 +50,156 @@ const requireAdminAuth = (req, res) => {
     return true;
 };
 
+/**
+ * Sync StudentRecord documents for all students in a class for a given date.
+ * Recomputes the dayLog entry and subject-level stats from ALL attendance data.
+ * Runs inside the provided session for transactional atomicity.
+ */
+const syncStudentRecords = async (classId, searchDate, normalizedPeriods, session) => {
+    // Get class roll numbers
+    const classroom = await Classroom.findById(classId)
+        .select('rollNumbers subjects')
+        .session(session)
+        .lean();
+
+    if (!classroom || !Array.isArray(classroom.rollNumbers)) return;
+
+    const rollNumbers = classroom.rollNumbers
+        .map(r => sanitizeRollNumber(r))
+        .filter(Boolean);
+
+    if (rollNumbers.length === 0) return;
+
+    // Build absent sets for fast lookup per period
+    const absentSets = normalizedPeriods.map(p => new Set(p.absentRollNumbers || []));
+
+    // Build the dayLog entry and per-subject deltas for each student
+    const bulkOps = rollNumbers.map(rollNumber => {
+        // Compute this student's dayLog entry for this date
+        const dayLogEntry = {
+            date: searchDate,
+            periods: normalizedPeriods.map((p, i) => ({
+                periodNum: p.periodNum,
+                subjectId: p.subjectId,
+                subjectName: p.subjectName,
+                status: absentSets[i].has(rollNumber) ? 'Absent' : 'Present'
+            }))
+        };
+
+        return {
+            rollNumber,
+            dayLogEntry
+        };
+    });
+
+    // For each student, we need to:
+    // 1. Remove the old dayLog entry for this date (if editing)
+    // 2. Add the new dayLog entry
+    // 3. Recompute subject stats from ALL attendance records
+    //
+    // Strategy: Pull old date entry, push new one, then recompute stats.
+    // We do this in two phases for efficiency.
+
+    // Phase 1: Upsert each student record and update the dayLog for this date
+    const writeOps = bulkOps.map(({ rollNumber, dayLogEntry }) => ({
+        updateOne: {
+            filter: { classId: new mongoose.Types.ObjectId(classId), rollNumber },
+            update: {
+                $set: { lastSyncedAt: new Date() },
+                $setOnInsert: { classId: new mongoose.Types.ObjectId(classId), rollNumber }
+            },
+            upsert: true
+        }
+    }));
+
+    if (writeOps.length > 0) {
+        await StudentRecord.bulkWrite(writeOps, { session });
+    }
+
+    // Phase 2: For each student, pull old dayLog entry for this date then push new one,
+    //          and recompute subject stats
+    const updateOps = [];
+
+    for (const { rollNumber, dayLogEntry } of bulkOps) {
+        // Pull old entry for this date
+        updateOps.push({
+            updateOne: {
+                filter: { classId: new mongoose.Types.ObjectId(classId), rollNumber },
+                update: { $pull: { dayLog: { date: searchDate } } }
+            }
+        });
+    }
+
+    if (updateOps.length > 0) {
+        await StudentRecord.bulkWrite(updateOps, { session });
+    }
+
+    // Push new dayLog entries (only if there are periods to record)
+    if (normalizedPeriods.length > 0) {
+        const pushOps = bulkOps.map(({ rollNumber, dayLogEntry }) => ({
+            updateOne: {
+                filter: { classId: new mongoose.Types.ObjectId(classId), rollNumber },
+                update: { $push: { dayLog: dayLogEntry } }
+            }
+        }));
+
+        if (pushOps.length > 0) {
+            await StudentRecord.bulkWrite(pushOps, { session });
+        }
+    }
+
+    // Phase 3: Recompute subject stats for all students from their dayLog
+    // Use aggregation on StudentRecord itself (fast, already per-student)
+    const studentRecords = await StudentRecord.find(
+        { classId: new mongoose.Types.ObjectId(classId), rollNumber: { $in: rollNumbers } }
+    ).session(session).lean();
+
+    const subjectMap = {};
+    (classroom.subjects || []).forEach(s => {
+        subjectMap[s._id.toString()] = s.name;
+    });
+
+    const statOps = studentRecords.map(record => {
+        // Recompute subjects from dayLog
+        const statsAccum = {}; // subjectId -> { total, attended }
+
+        (record.dayLog || []).forEach(day => {
+            (day.periods || []).forEach(p => {
+                if (!p.subjectId) return;
+                if (!statsAccum[p.subjectId]) {
+                    statsAccum[p.subjectId] = {
+                        subjectId: p.subjectId,
+                        subjectName: p.subjectName || subjectMap[p.subjectId] || '',
+                        totalClasses: 0,
+                        attendedClasses: 0
+                    };
+                }
+                statsAccum[p.subjectId].totalClasses += 1;
+                if (p.status === 'Present') {
+                    statsAccum[p.subjectId].attendedClasses += 1;
+                }
+            });
+        });
+
+        const subjects = Object.values(statsAccum);
+
+        return {
+            updateOne: {
+                filter: { _id: record._id },
+                update: { $set: { subjects } }
+            }
+        };
+    });
+
+    if (statOps.length > 0) {
+        await StudentRecord.bulkWrite(statOps, { session });
+    }
+};
+
 // @route   POST /api/attendance/mark
 router.post('/mark', auth, async (req, res) => {
+    const session = await mongoose.startSession();
+
     try {
         if (!requireAdminAuth(req, res)) return;
         const { classId, date, periods } = req.body;
@@ -65,46 +215,41 @@ router.post('/mark', auth, async (req, res) => {
         const searchDate = normalizeDate(date);
         const normalizedPeriods = normalizePeriodsForStorage(periods);
 
+        // Start transaction — both Attendance and StudentRecord update atomically
+        session.startTransaction();
+
         let updatedRecord;
         if (normalizedPeriods.length === 0) {
-            // Delete the entire attendance document if there are no periods
-            await Attendance.findOneAndDelete({ classId: classId, date: searchDate });
+            await Attendance.findOneAndDelete(
+                { classId: classId, date: searchDate },
+                { session }
+            );
             updatedRecord = null;
         } else {
             updatedRecord = await Attendance.findOneAndUpdate(
                 { classId: classId, date: searchDate },
                 { $set: { periods: normalizedPeriods } },
-                { new: true, upsert: true }
+                { new: true, upsert: true, session }
             );
         }
 
+        // Sync StudentRecords within the same transaction
+        await syncStudentRecords(classId, searchDate, normalizedPeriods, session);
+
+        // Both succeeded — commit
+        await session.commitTransaction();
+
         res.json({ message: 'Attendance Saved Successfully!', data: updatedRecord });
 
-        // Send push notifications (non-blocking, fire-and-forget)
-        /*
-        if (normalizedPeriods.length > 0) {
-            Classroom.findById(classId).select('className').lean()
-                .then(cls => {
-                    const name = cls?.className || 'your class';
-                    const dateLabel = new Date(date + 'T00:00:00').toLocaleDateString('en-US', {
-                        month: 'short', day: 'numeric'
-                    });
-                    sendPushToClass(classId, {
-                        title: `📋 Attendance Updated`,
-                        body: `${name} — ${dateLabel}`,
-                        // Link each subscriber to their own attendance page
-                        urlBuilder: (sub) => sub.rollNumber
-                            ? `/student/${sub.classId}/${sub.rollNumber}`
-                            : '/'
-                    });
-                })
-                .catch(() => { });
-        }
-        */
-
     } catch (err) {
+        // Rollback on any failure
+        if (session.inTransaction()) {
+            await session.abortTransaction();
+        }
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
+    } finally {
+        session.endSession();
     }
 });
 

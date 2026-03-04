@@ -7,6 +7,7 @@ const Attendance = require('../models/Attendance');
 const Announcement = require('../models/Announcement');
 const Report = require('../models/Report');
 const PushSubscription = require('../models/PushSubscription');
+const StudentRecord = require('../models/StudentRecord');
 const auth = require('../middleware/auth');
 
 // ─── Super Admin Middleware ───────────────────────────────────────────────────
@@ -45,12 +46,13 @@ router.delete('/super-admin/purge/:classId', superAdminAuth, async (req, res) =>
             return res.status(404).json({ error: 'Class not found' });
         }
 
-        // Cascade delete across all collections
-        const [attResult, annResult, repResult, pushResult] = await Promise.all([
+        // Cascade delete across all collections (including StudentRecord)
+        const [attResult, annResult, repResult, pushResult, srResult] = await Promise.all([
             Attendance.deleteMany({ classId }),
             Announcement.deleteMany({ classId }),
             Report.deleteMany({ classId }),
             PushSubscription.deleteMany({ classId }),
+            StudentRecord.deleteMany({ classId }),
         ]);
 
         // Finally delete the classroom itself
@@ -64,6 +66,7 @@ router.delete('/super-admin/purge/:classId', superAdminAuth, async (req, res) =>
                 announcements: annResult.deletedCount,
                 reports: repResult.deletedCount,
                 pushSubscriptions: pushResult.deletedCount,
+                studentRecords: srResult.deletedCount,
             },
         });
     } catch (err) {
@@ -356,6 +359,18 @@ router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
 
         const subject = updatedClassroom.subjects.find(s => s._id.toString() === subjectId);
 
+        // Sync subject name in all StudentRecords for this class
+        await StudentRecord.updateMany(
+            { classId, 'subjects.subjectId': subjectId },
+            { $set: { 'subjects.$.subjectName': name.trim() } }
+        );
+        // Also update subjectName in dayLog entries
+        await StudentRecord.updateMany(
+            { classId, 'dayLog.periods.subjectId': subjectId },
+            { $set: { 'dayLog.$[].periods.$[p].subjectName': name.trim() } },
+            { arrayFilters: [{ 'p.subjectId': subjectId }] }
+        );
+
         res.json({
             message: 'Subject updated successfully!',
             subject: subject
@@ -398,6 +413,12 @@ router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
         if (!updatedClassroom) {
             return res.status(404).json({ error: 'Failed to delete. Class not found.' });
         }
+
+        // Remove deleted subject from StudentRecord stats
+        await StudentRecord.updateMany(
+            { classId },
+            { $pull: { subjects: { subjectId: subjectId } } }
+        );
 
         res.json({
             message: 'Subject deleted successfully!'
