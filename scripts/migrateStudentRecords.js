@@ -20,29 +20,13 @@ const sanitizeRollNumber = (value) => {
     return cleaned || null;
 };
 
-const getClassRollNumbers = (classroom) => {
-    if (Array.isArray(classroom?.rollNumbers) && classroom.rollNumbers.length > 0) {
-        return classroom.rollNumbers
-            .map((roll) => sanitizeRollNumber(roll))
-            .filter(Boolean);
-    }
-
-    // Legacy fallback for old class documents that only have totalStudents.
-    const totalStudents = Number(classroom?.totalStudents);
-    if (Number.isInteger(totalStudents) && totalStudents > 0) {
-        return Array.from({ length: totalStudents }, (_, index) => String(index + 1));
-    }
-
-    return [];
-};
-
 async function migrate() {
     try {
         await mongoose.connect(process.env.MONGO_URI);
         console.log('✅ Connected to MongoDB');
 
         // Get all classes
-        const classes = await Classroom.find({}).select('_id className rollNumbers totalStudents subjects').lean();
+        const classes = await Classroom.find({}).select('_id className rollNumbers subjects').lean();
         console.log(`📦 Found ${classes.length} class(es) to migrate\n`);
 
         let totalStudents = 0;
@@ -51,7 +35,9 @@ async function migrate() {
         for (const cls of classes) {
             const classId = cls._id;
             const className = cls.className;
-            const rollNumbers = getClassRollNumbers(cls);
+            const rollNumbers = (cls.rollNumbers || [])
+                .map(r => sanitizeRollNumber(r))
+                .filter(Boolean);
 
             if (rollNumbers.length === 0) {
                 console.log(`⏭️  ${className}: No students, skipping`);
