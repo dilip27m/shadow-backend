@@ -75,6 +75,38 @@ router.delete('/super-admin/purge/:classId', superAdminAuth, async (req, res) =>
     }
 });
 
+// @route   GET /api/class/super-admin/class-details/:classId
+// @desc    Get detailed metrics for a specific class (Super Admin only)
+router.get('/super-admin/class-details/:classId', superAdminAuth, async (req, res) => {
+    try {
+        const { classId } = req.params;
+
+        const classroom = await Classroom.findById(classId).select('blockedRollNumbers subjects').lean();
+        if (!classroom) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        const [attendancesCount, announcementsCount, reportsCount, pushSubscriptionsCount] = await Promise.all([
+            Attendance.countDocuments({ classId }),
+            Announcement.countDocuments({ classId }),
+            Report.countDocuments({ classId }),
+            PushSubscription.countDocuments({ classId })
+        ]);
+
+        res.json({
+            blockedRollNumbers: classroom.blockedRollNumbers || [],
+            subjectsCount: (classroom.subjects || []).length,
+            attendancesCount,
+            announcementsCount,
+            reportsCount,
+            pushSubscriptionsCount
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
 
 
 const sanitizeRollNumber = (value) => {
