@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const mongoose = require('mongoose'); // Required for ObjectId casting
+const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const Classroom = require('../models/Classroom');
 const Attendance = require('../models/Attendance');
@@ -18,7 +18,6 @@ const getClassRollNumbers = (classroom) => {
             .filter(Boolean);
     }
 
-    // Legacy fallback for old class documents that only have totalStudents.
     const totalStudents = Number(classroom?.totalStudents);
     if (Number.isInteger(totalStudents) && totalStudents > 0) {
         return Array.from({ length: totalStudents }, (_, index) => String(index + 1));
@@ -32,7 +31,22 @@ const isRollAbsent = (absentRollNumbers, rollNumber) => {
     return absentRollNumbers.some((roll) => sanitizeRollNumber(roll) === rollNumber);
 };
 
-// Issue student access token after validating class + roll membership
+const isRollOnDutyLeave = (dutyLeaveRollNumbers, rollNumber) => {
+    if (!Array.isArray(dutyLeaveRollNumbers)) return false;
+    return dutyLeaveRollNumbers.some((roll) => sanitizeRollNumber(roll) === rollNumber);
+};
+
+// Derive the display status and whether the period counts as attended
+const getPeriodStatus = (period, rollNo) => {
+    const absent = isRollAbsent(period.absentRollNumbers, rollNo);
+    const dl = isRollOnDutyLeave(period.dutyLeaveRollNumbers, rollNo);
+
+    if (!absent) return { status: 'Present', attended: true };
+    if (dl) return { status: 'Present (DL)', attended: true };  // absent but DL overrides to present
+    return { status: 'Absent', attended: false };
+};
+
+// Issue student access token
 router.post('/access', async (req, res) => {
     try {
         const className = String(req.body?.className || '').trim();
@@ -56,7 +70,6 @@ router.post('/access', async (req, res) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
-        // Check if the student is blocked (privacy opt-out)
         const blockedRolls = (classroom.blockedRollNumbers || []).map(r => sanitizeRollNumber(r)).filter(Boolean);
         if (blockedRolls.includes(rollNumber)) {
             return res.status(403).json({ error: 'This roll number\'s attendance is set to private by the class admin.' });
@@ -80,7 +93,7 @@ router.post('/access', async (req, res) => {
     }
 });
 
-// Get overall attendance report
+// Get overall attendance report — DL counts as present
 router.get('/report/:classId/:rollNumber', async (req, res) => {
     try {
         const { classId, rollNumber } = req.params;
@@ -94,7 +107,8 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
             return res.status(400).json({ error: 'Invalid Roll Number' });
         }
 
-        const classroom = await Classroom.findById(classId).select('className subjects rollNumbers totalStudents blockedRollNumbers').lean();
+        const classroom = await Classroom.findById(classId)
+            .select('className subjects rollNumbers totalStudents blockedRollNumbers').lean();
         if (!classroom) return res.status(404).json({ error: 'Class not found' });
 
         const classRollNumbers = getClassRollNumbers(classroom);
@@ -102,59 +116,63 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
-        // Check if the student is blocked (privacy opt-out)
         const blockedRolls = (classroom.blockedRollNumbers || []).map(r => sanitizeRollNumber(r)).filter(Boolean);
         if (blockedRolls.includes(rollNo)) {
             return res.status(403).json({ error: 'This roll number\'s attendance is set to private by the class admin.' });
         }
 
-        // 🚀 OPTIMIZATION: Use Aggregation instead of fetching all records
-        const latestAttendance = await Attendance.findOne({ classId }).sort({ updatedAt: -1 }).select('updatedAt').lean();
+        const latestAttendance = await Attendance.findOne({ classId })
+            .sort({ updatedAt: -1 }).select('updatedAt').lean();
         const lastUpdated = latestAttendance ? latestAttendance.updatedAt : null;
 
-        const absentChecks = [{ $in: [rollNo, "$periods.absentRollNumbers"] }];
+        // Build absent checks (handle both string and numeric roll stored in DB)
+        const absentChecks = [{ $in: [rollNo, '$periods.absentRollNumbers'] }];
         if (/^\d+$/.test(rollNo)) {
-            absentChecks.push({ $in: [Number(rollNo), "$periods.absentRollNumbers"] });
+            absentChecks.push({ $in: [Number(rollNo), '$periods.absentRollNumbers'] });
+        }
+
+        // Build DL checks (same pattern)
+        const dlChecks = [{ $in: [rollNo, '$periods.dutyLeaveRollNumbers'] }];
+        if (/^\d+$/.test(rollNo)) {
+            dlChecks.push({ $in: [Number(rollNo), '$periods.dutyLeaveRollNumbers'] });
         }
 
         const stats = await Attendance.aggregate([
-            {
-                $match: { classId: new mongoose.Types.ObjectId(classId) }
-            },
-            {
-                $unwind: "$periods"
-            },
+            { $match: { classId: new mongoose.Types.ObjectId(classId) } },
+            { $unwind: '$periods' },
             {
                 $group: {
-                    _id: "$periods.subjectId", // Group by Subject ID
+                    _id: '$periods.subjectId',
                     totalClasses: { $sum: 1 },
                     attendedClasses: {
                         $sum: {
-                            // If rollNo is in absent list, add 0, else add 1
-                            $cond: [{ $or: absentChecks }, 0, 1]
+                            $cond: {
+                                if: { $or: absentChecks },
+                                then: {
+                                    // Absent — but check if DL overrides it to present
+                                    $cond: [{ $or: dlChecks }, 1, 0]
+                                },
+                                else: 1  // Not absent → present
+                            }
                         }
                     }
                 }
             }
         ]);
 
-        // Convert array to Map for O(1) lookup
         const statsMap = {};
         stats.forEach(stat => {
             statsMap[stat._id] = stat;
         });
 
-        // Finalize calculations using Classroom metadata
         const finalReport = classroom.subjects.map(subject => {
-            // Get stats from map or default to 0
             const stat = statsMap[subject._id.toString()] || { totalClasses: 0, attendedClasses: 0 };
             const { totalClasses, attendedClasses } = stat;
-
             const percentage = totalClasses === 0 ? 0 : parseFloat(((attendedClasses / totalClasses) * 100).toFixed(1));
 
             return {
                 _id: subject._id,
-                subjectName: subject.name, // Frontend expects 'subjectName'
+                subjectName: subject.name,
                 code: subject.code,
                 percentage,
                 attended: attendedClasses,
@@ -170,12 +188,12 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
         });
 
     } catch (err) {
-        console.error("Report Error:", err);
+        console.error('Report Error:', err);
         res.status(500).json({ error: 'Server Error' });
     }
 });
 
-
+// Day attendance — returns Present / Present (DL) / Absent
 router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
     try {
         const { classId, rollNumber, date } = req.params;
@@ -197,32 +215,25 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
-        // Normalize date to match how it's stored (same as attendance save)
         const normalizeDate = (dateString) => {
             const datePart = new Date(dateString).toISOString().split('T')[0];
             return new Date(`${datePart}T00:00:00.000Z`);
         };
 
         const queryDate = normalizeDate(date);
+        const attendanceRecord = await Attendance.findOne({ classId, date: queryDate })
+            .sort({ updatedAt: -1 }).select('periods').lean();
 
-
-
-        // Find the most recent attendance record for this date
-        const attendanceRecord = await Attendance.findOne({ classId, date: queryDate }).sort({ updatedAt: -1 }).select('periods').lean();
-
-
-
-        // Only return data if attendance was actually marked
         if (!attendanceRecord || !attendanceRecord.periods || attendanceRecord.periods.length === 0) {
             return res.json({ periods: [] });
         }
 
         const periodsWithStatus = attendanceRecord.periods.map(period => {
-            const isAbsent = isRollAbsent(period.absentRollNumbers, rollNo);
+            const { status } = getPeriodStatus(period, rollNo);
             return {
                 periodNum: period.periodNum,
                 subjectName: period.subjectName,
-                status: isAbsent ? 'Absent' : 'Present'
+                status
             };
         });
 
@@ -233,7 +244,7 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
     }
 });
 
-// Get detailed history for a specific subject
+// Subject history — returns Present / Present (DL) / Absent per period
 router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
     try {
         const { classId, rollNumber, subjectId } = req.params;
@@ -255,8 +266,6 @@ router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
-        // Find all attendance records containing this subject
-        // Sort by date descending (newest first)
         const records = await Attendance.find({
             classId: classId,
             'periods.subjectId': subjectId
@@ -265,13 +274,13 @@ router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
         const history = [];
 
         records.forEach(record => {
-            // A subject might occur multiple times in one day (e.g. 2 periods)
             const relevantPeriods = record.periods.filter(p => String(p.subjectId) === String(subjectId));
 
             relevantPeriods.forEach(p => {
+                const { status } = getPeriodStatus(p, rollNo);
                 history.push({
-                    date: record.date, // Frontend will format this
-                    status: isRollAbsent(p.absentRollNumbers, rollNo) ? 'Absent' : 'Present',
+                    date: record.date,
+                    status,
                     periodNum: p.periodNum
                 });
             });
@@ -280,7 +289,7 @@ router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
         res.json({ history });
 
     } catch (err) {
-        console.error("History Error:", err);
+        console.error('History Error:', err);
         res.status(500).json({ error: 'Server Error' });
     }
 });

@@ -9,10 +9,10 @@ const AttendanceSchema = new mongoose.Schema({
         subjectId: String,
         subjectName: String,
 
-
-        absentRollNumbers: [{ type: String }]
+        absentRollNumbers: [{ type: String }],
+        dutyLeaveRollNumbers: [{ type: String }]
     }]
-}, { timestamps: true }); // Add timestamps for createdAt and updatedAt
+}, { timestamps: true });
 
 AttendanceSchema.index({ classId: 1, date: 1 }, { unique: true });
 AttendanceSchema.index({ classId: 1, updatedAt: -1 });

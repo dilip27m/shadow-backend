@@ -22,7 +22,9 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.1.4",
+    "mongodb": "^7.0.0",
     "morgan": "^1.10.0",
+    "node-cron": "^4.2.1",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
