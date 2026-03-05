@@ -14,16 +14,16 @@ const reportRoutes = require('./routes/reportRoutes');
 const announcementRoutes = require('./routes/announcementRoutes');
 const aiRoutes = require('./routes/aiRoutes');
 const pushRoutes = require('./routes/pushRoutes');
+const { startReminderCron } = require('./scripts/reminderCron');
 
 const app = express();
 
-// ─── CORS — must come before Helmet ───
 // ─── CORS — must come before Helmet ───
 const corsOptions = {
     origin: true, // Reflects the request origin, allowing any origin
     credentials: true, // Required for cookies/authorization headers
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Super-Admin-Key'],
     optionsSuccessStatus: 200
 };
 app.use(cors(corsOptions));
@@ -71,11 +71,15 @@ if (!mongoUri) {
 }
 
 mongoose.connect(mongoUri, {
-    maxPoolSize: 50, // Increased to 50 for even higher concurrency 
+    maxPoolSize: 50,
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
 })
-    .then(() => console.log('MongoDB Connected (Pool Limited to 50)'))
+    .then(() => {
+        console.log('MongoDB Connected (Pool Limited to 50)');
+        // Start the daily reminder cron only after DB is ready
+        startReminderCron();
+    })
     .catch(err => console.log(err));
 
 // ─── Routes ───

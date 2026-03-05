@@ -3,7 +3,111 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // Import bcrypt for security
 const Classroom = require('../models/Classroom');
+const Attendance = require('../models/Attendance');
+const Announcement = require('../models/Announcement');
+const Report = require('../models/Report');
+const PushSubscription = require('../models/PushSubscription');
+const StudentRecord = require('../models/StudentRecord');
 const auth = require('../middleware/auth');
+
+// ─── Super Admin Middleware ───────────────────────────────────────────────────
+const superAdminAuth = (req, res, next) => {
+    const key = req.headers['x-super-admin-key'];
+    if (!key || key !== process.env.SUPER_ADMIN_MASTER_KEY) {
+        return res.status(401).json({ error: 'Unauthorized: Invalid Super Admin Key' });
+    }
+    next();
+};
+
+// @route   GET /api/class/super-admin/classes
+// @desc    List all classes (Super Admin only)
+router.get('/super-admin/classes', superAdminAuth, async (req, res) => {
+    try {
+        const classes = await Classroom.find({})
+            .select('_id className createdAt rollNumbers totalStudents')
+            .sort({ createdAt: -1 })
+            .lean();
+        res.json({ classes });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// @route   DELETE /api/class/super-admin/purge/:classId
+// @desc    Cascade delete a class and ALL its associated data (Super Admin only)
+router.delete('/super-admin/purge/:classId', superAdminAuth, async (req, res) => {
+    try {
+        const { classId } = req.params;
+
+        // Verify the class exists first
+        const classroom = await Classroom.findById(classId).select('className').lean();
+        if (!classroom) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        // Cascade delete across all collections (including StudentRecord)
+        const [attResult, annResult, repResult, pushResult, srResult] = await Promise.all([
+            Attendance.deleteMany({ classId }),
+            Announcement.deleteMany({ classId }),
+            Report.deleteMany({ classId }),
+            PushSubscription.deleteMany({ classId }),
+            StudentRecord.deleteMany({ classId }),
+        ]);
+
+        // Finally delete the classroom itself
+        await Classroom.findByIdAndDelete(classId);
+
+        res.json({
+            message: `Class "${classroom.className}" and all associated data purged successfully.`,
+            className: classroom.className,
+            deleted: {
+                attendances: attResult.deletedCount,
+                announcements: annResult.deletedCount,
+                reports: repResult.deletedCount,
+                pushSubscriptions: pushResult.deletedCount,
+                studentRecords: srResult.deletedCount,
+            },
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+// @route   GET /api/class/super-admin/class-details/:classId
+// @desc    Get detailed metrics for a specific class (Super Admin only)
+router.get('/super-admin/class-details/:classId', superAdminAuth, async (req, res) => {
+    try {
+        const { classId } = req.params;
+
+        const classroom = await Classroom.findById(classId).select('blockedRollNumbers subjects').lean();
+        if (!classroom) {
+            return res.status(404).json({ error: 'Class not found' });
+        }
+
+        const [attendancesCount, announcementsCount, reportsCount, pushSubscriptionsCount] = await Promise.all([
+            Attendance.countDocuments({ classId }),
+            Announcement.countDocuments({ classId }),
+            Report.countDocuments({ classId }),
+            PushSubscription.countDocuments({ classId })
+        ]);
+
+        res.json({
+            blockedRollNumbers: classroom.blockedRollNumbers || [],
+            subjectsCount: (classroom.subjects || []).length,
+            attendancesCount,
+            announcementsCount,
+            reportsCount,
+            pushSubscriptionsCount
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
+
 
 const sanitizeRollNumber = (value) => {
     if (value === undefined || value === null) return null;
@@ -99,17 +203,13 @@ router.patch('/:classId/students', auth, async (req, res) => {
 
         // Accept either a single rollNumber or an array of rollNumbers
         const inputRolls = req.body.rollNumbers || (req.body.rollNumber ? [req.body.rollNumber] : []);
-        console.log("PATCH /students - inputRolls:", inputRolls, typeof inputRolls, Array.isArray(inputRolls));
         const validRolls = sanitizeRollNumbers(inputRolls);
-        console.log("PATCH /students - validRolls:", validRolls);
 
         if (req.user.classId !== classId) {
-            console.log("PATCH /students - 403 user mismatch");
             return res.status(403).json({ error: 'Unauthorized action' });
         }
 
         if (validRolls.length === 0) {
-            console.log("PATCH /students - 400 validRolls length is 0");
             return res.status(400).json({ error: 'At least one valid roll number is required' });
         }
 
@@ -291,12 +391,23 @@ router.put('/:id/edit-subject/:subjectId', auth, async (req, res) => {
 
         const subject = updatedClassroom.subjects.find(s => s._id.toString() === subjectId);
 
+        // Sync subject name in all StudentRecords for this class
+        await StudentRecord.updateMany(
+            { classId, 'subjects.subjectId': subjectId },
+            { $set: { 'subjects.$.subjectName': name.trim() } }
+        );
+        // Also update subjectName in dayLog entries
+        await StudentRecord.updateMany(
+            { classId, 'dayLog.periods.subjectId': subjectId },
+            { $set: { 'dayLog.$[].periods.$[p].subjectName': name.trim() } },
+            { arrayFilters: [{ 'p.subjectId': subjectId }] }
+        );
+
         res.json({
             message: 'Subject updated successfully!',
             subject: subject
         });
     } catch (err) {
-        require('fs').appendFileSync('class-error.log', '\n' + new Date().toISOString() + ' EDIT: ' + (err.stack || err.toString()));
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
     }
@@ -334,11 +445,16 @@ router.delete('/:id/delete-subject/:subjectId', auth, async (req, res) => {
             return res.status(404).json({ error: 'Failed to delete. Class not found.' });
         }
 
+        // Remove deleted subject from StudentRecord stats
+        await StudentRecord.updateMany(
+            { classId },
+            { $pull: { subjects: { subjectId: subjectId } } }
+        );
+
         res.json({
             message: 'Subject deleted successfully!'
         });
     } catch (err) {
-        require('fs').appendFileSync('class-error.log', '\n' + new Date().toISOString() + ' DEL: ' + (err.stack || err.toString()));
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
     }

@@ -180,7 +180,13 @@ router.patch('/:reportId', auth, async (req, res) => {
             return res.status(403).json({ error: 'Unauthorized — report belongs to another class' });
         }
 
-        if (status) report.status = status;
+        if (status) {
+            report.status = status;
+            // Stamp resolvedAt when admin responds — TTL will auto-delete 7 days later
+            if (status === 'resolved' || status === 'rejected') {
+                report.resolvedAt = new Date();
+            }
+        }
         if (adminResponse) report.adminResponse = adminResponse;
 
         await report.save();

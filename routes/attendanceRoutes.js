@@ -1,7 +1,9 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
 const Attendance = require('../models/Attendance');
 const Classroom = require('../models/Classroom');
+const StudentRecord = require('../models/StudentRecord');
 const auth = require('../middleware/auth');
 const { sendPushToClass } = require('../utils/pushService');
 
@@ -31,15 +33,11 @@ const deduplicateRolls = (arr) => {
 
 const normalizePeriodsForStorage = (periods) => {
     if (!Array.isArray(periods)) return [];
-
-    return periods.map((period) => {
-        return {
-            ...period,
-            absentRollNumbers: deduplicateRolls(period.absentRollNumbers),
-            // Preserve dutyLeaveRollNumbers if already present on the period object
-            dutyLeaveRollNumbers: deduplicateRolls(period.dutyLeaveRollNumbers || [])
-        };
-    });
+    return periods.map((period) => ({
+        ...period,
+        absentRollNumbers: deduplicateRolls(period.absentRollNumbers),
+        dutyLeaveRollNumbers: deduplicateRolls(period.dutyLeaveRollNumbers || [])
+    }));
 };
 
 const requireAdminAuth = (req, res) => {
@@ -50,8 +48,137 @@ const requireAdminAuth = (req, res) => {
     return true;
 };
 
+/**
+ * Derive the attendance status for a single student in a single period.
+ * - Not in absentRollNumbers           → 'Present'
+ * - In absentRollNumbers + in DL list  → 'Present (DL)'  (counts as attended)
+ * - In absentRollNumbers only          → 'Absent'
+ */
+const getPeriodStatus = (period, rollNumber) => {
+    const absentSet = new Set(deduplicateRolls(period.absentRollNumbers));
+    const dlSet = new Set(deduplicateRolls(period.dutyLeaveRollNumbers || []));
+    const isAbsent = absentSet.has(rollNumber);
+    const isDL = dlSet.has(rollNumber);
+
+    if (!isAbsent) return 'Present';
+    if (isDL) return 'Present (DL)';
+    return 'Absent';
+};
+
+/**
+ * Sync StudentRecord documents for all students in a class for a given date.
+ * Correctly handles 'Present (DL)' status and counts DL as attended in subject stats.
+ */
+const syncStudentRecords = async (classId, searchDate, periodsToSync, session) => {
+    const classroom = await Classroom.findById(classId)
+        .select('rollNumbers subjects')
+        .session(session)
+        .lean();
+
+    if (!classroom || !Array.isArray(classroom.rollNumbers)) return;
+
+    const rollNumbers = classroom.rollNumbers
+        .map(r => sanitizeRollNumber(r))
+        .filter(Boolean);
+
+    if (rollNumbers.length === 0) return;
+
+    const subjectMap = {};
+    (classroom.subjects || []).forEach(s => {
+        subjectMap[s._id.toString()] = s.name;
+    });
+
+    // Phase 1: Upsert skeleton records (ensures documents exist before update)
+    const upsertOps = rollNumbers.map(rollNumber => ({
+        updateOne: {
+            filter: { classId: new mongoose.Types.ObjectId(classId), rollNumber },
+            update: {
+                $set: { lastSyncedAt: new Date() },
+                $setOnInsert: { classId: new mongoose.Types.ObjectId(classId), rollNumber }
+            },
+            upsert: true
+        }
+    }));
+    await StudentRecord.bulkWrite(upsertOps, { session });
+
+    // Phase 2: Pull old dayLog entry for this date from all students
+    await StudentRecord.bulkWrite(
+        rollNumbers.map(rollNumber => ({
+            updateOne: {
+                filter: { classId: new mongoose.Types.ObjectId(classId), rollNumber },
+                update: { $pull: { dayLog: { date: searchDate } } }
+            }
+        })),
+        { session }
+    );
+
+    // Phase 3: Push new dayLog entry (only if there are periods to record)
+    if (periodsToSync.length > 0) {
+        const pushOps = rollNumbers.map(rollNumber => {
+            const dayLogEntry = {
+                date: searchDate,
+                periods: periodsToSync.map(p => ({
+                    periodNum: p.periodNum,
+                    subjectId: p.subjectId,
+                    subjectName: p.subjectName,
+                    // Use getPeriodStatus so DL is correctly written into StudentRecord
+                    status: getPeriodStatus(p, rollNumber)
+                }))
+            };
+            return {
+                updateOne: {
+                    filter: { classId: new mongoose.Types.ObjectId(classId), rollNumber },
+                    update: { $push: { dayLog: dayLogEntry } }
+                }
+            };
+        });
+        await StudentRecord.bulkWrite(pushOps, { session });
+    }
+
+    // Phase 4: Recompute subject stats from the full dayLog for each student
+    const studentRecords = await StudentRecord.find(
+        { classId: new mongoose.Types.ObjectId(classId), rollNumber: { $in: rollNumbers } }
+    ).session(session).lean();
+
+    const statOps = studentRecords.map(record => {
+        const statsAccum = {};
+
+        (record.dayLog || []).forEach(day => {
+            (day.periods || []).forEach(p => {
+                if (!p.subjectId) return;
+                if (!statsAccum[p.subjectId]) {
+                    statsAccum[p.subjectId] = {
+                        subjectId: p.subjectId,
+                        subjectName: p.subjectName || subjectMap[p.subjectId] || '',
+                        totalClasses: 0,
+                        attendedClasses: 0
+                    };
+                }
+                statsAccum[p.subjectId].totalClasses += 1;
+                // Both 'Present' and 'Present (DL)' count as attended
+                if (p.status === 'Present' || p.status === 'Present (DL)') {
+                    statsAccum[p.subjectId].attendedClasses += 1;
+                }
+            });
+        });
+
+        return {
+            updateOne: {
+                filter: { _id: record._id },
+                update: { $set: { subjects: Object.values(statsAccum) } }
+            }
+        };
+    });
+
+    if (statOps.length > 0) {
+        await StudentRecord.bulkWrite(statOps, { session });
+    }
+};
+
 // @route   POST /api/attendance/mark
 router.post('/mark', auth, async (req, res) => {
+    const session = await mongoose.startSession();
+
     try {
         if (!requireAdminAuth(req, res)) return;
         const { classId, date, periods } = req.body;
@@ -67,13 +194,17 @@ router.post('/mark', auth, async (req, res) => {
         const searchDate = normalizeDate(date);
         const normalizedPeriods = normalizePeriodsForStorage(periods);
 
+        session.startTransaction();
+
         let updatedRecord;
         if (normalizedPeriods.length === 0) {
-            await Attendance.findOneAndDelete({ classId: classId, date: searchDate });
+            await Attendance.findOneAndDelete(
+                { classId: classId, date: searchDate },
+                { session }
+            );
             updatedRecord = null;
         } else {
-            // When re-saving attendance, preserve existing dutyLeaveRollNumbers for each period
-            // so that marking attendance again doesn't wipe DL data
+            // Preserve existing DL rolls when re-marking attendance
             const existing = await Attendance.findOne({ classId, date: searchDate }).lean();
             const existingDLMap = {};
             if (existing) {
@@ -82,7 +213,7 @@ router.post('/mark', auth, async (req, res) => {
                 });
             }
 
-            // Merge: preserve DL rolls from existing record unless the period explicitly sends them
+            // FIX: was saving normalizedPeriods — must save mergedPeriods to preserve DL
             const mergedPeriods = normalizedPeriods.map(p => ({
                 ...p,
                 dutyLeaveRollNumbers: p.dutyLeaveRollNumbers?.length
@@ -92,10 +223,20 @@ router.post('/mark', auth, async (req, res) => {
 
             updatedRecord = await Attendance.findOneAndUpdate(
                 { classId: classId, date: searchDate },
-                { $set: { periods: mergedPeriods } },
-                { new: true, upsert: true }
+                { $set: { periods: mergedPeriods } },  // FIX: mergedPeriods not normalizedPeriods
+                { new: true, upsert: true, session }
             );
+
+            // Sync using mergedPeriods so DL is included in StudentRecord
+            await syncStudentRecords(classId, searchDate, mergedPeriods, session);
         }
+
+        if (normalizedPeriods.length === 0) {
+            // Attendance deleted — wipe dayLog entries for this date
+            await syncStudentRecords(classId, searchDate, [], session);
+        }
+
+        await session.commitTransaction();
 
         res.json({ message: 'Attendance Saved Successfully!', data: updatedRecord });
 
@@ -116,8 +257,11 @@ router.post('/mark', auth, async (req, res) => {
         }
 
     } catch (err) {
+        if (session.inTransaction()) await session.abortTransaction();
         console.error(err);
         res.status(500).json({ error: 'Server Error' });
+    } finally {
+        session.endSession();
     }
 });
 
@@ -126,13 +270,8 @@ router.get('/by-date/:classId/:date', async (req, res) => {
     try {
         const { classId, date } = req.params;
         const searchDate = normalizeDate(date);
-
         const record = await Attendance.findOne({ classId, date: searchDate }).lean();
-
-        if (!record) {
-            return res.json({ periods: [] });
-        }
-
+        if (!record) return res.json({ periods: [] });
         res.json(record);
     } catch (err) {
         res.status(500).json({ error: 'Server Error' });
@@ -147,19 +286,19 @@ router.get('/dates/:classId', async (req, res) => {
             classId,
             periods: { $exists: true, $not: { $size: 0 } }
         }).select('date -_id').sort({ date: -1 }).lean();
-
-        const dates = records.map(r => r.date);
-        res.json({ dates });
+        res.json({ dates: records.map(r => r.date) });
     } catch (err) {
         res.status(500).json({ error: 'Server Error' });
     }
 });
 
 // @route   POST /api/attendance/duty-leave
-// @desc    Apply duty leave to selected rolls for selected periods on a date.
-//          Toggles: if a roll is already DL on ALL selected periods, it is removed; otherwise it is added.
+// @desc    Toggle DL for selected rolls on selected periods for a date.
+//          Also syncs StudentRecord so the change is immediately reflected for students.
 // @access  Admin only
 router.post('/duty-leave', auth, async (req, res) => {
+    const session = await mongoose.startSession();
+
     try {
         if (!requireAdminAuth(req, res)) return;
 
@@ -184,19 +323,18 @@ router.post('/duty-leave', auth, async (req, res) => {
         const cleanRolls = deduplicateRolls(rollNumbers);
         const searchDate = normalizeDate(date);
 
-        // Attendance must already exist for this date — can't apply DL to a day with no attendance
         const record = await Attendance.findOne({ classId, date: searchDate });
         if (!record) {
-            return res.status(404).json({ error: 'No attendance record found for this date. Mark attendance first.' });
+            return res.status(404).json({
+                error: 'No attendance record found for this date. Mark attendance first.'
+            });
         }
 
-        // Determine whether we're adding or removing DL
-        // Rule: if ALL selected rolls are already DL on ALL selected periods → remove (toggle off)
-        //       otherwise → add
+        // Toggle logic: if ALL selected rolls are already DL on ALL selected periods → remove
         const targetPeriods = record.periods.filter(p => periodNums.includes(p.periodNum));
         const allAlreadyDL = cleanRolls.every(roll =>
             targetPeriods.every(p =>
-                (p.dutyLeaveRollNumbers || []).map(r => sanitizeRollNumber(r)).includes(roll)
+                deduplicateRolls(p.dutyLeaveRollNumbers || []).includes(roll)
             )
         );
 
@@ -204,23 +342,27 @@ router.post('/duty-leave', auth, async (req, res) => {
             if (!periodNums.includes(period.periodNum)) return period;
 
             let dlRolls = deduplicateRolls(period.dutyLeaveRollNumbers || []);
-
             if (allAlreadyDL) {
-                // Remove these rolls from DL
                 dlRolls = dlRolls.filter(r => !cleanRolls.includes(r));
             } else {
-                // Add these rolls to DL (deduplicated)
                 cleanRolls.forEach(roll => {
                     if (!dlRolls.includes(roll)) dlRolls.push(roll);
                 });
             }
-
             period.dutyLeaveRollNumbers = dlRolls;
             return period;
         });
 
         record.markModified('periods');
-        await record.save();
+
+        session.startTransaction();
+
+        await record.save({ session });
+
+        // FIX: sync StudentRecord after DL change so students see updated status immediately
+        await syncStudentRecords(classId, searchDate, record.periods, session);
+
+        await session.commitTransaction();
 
         const action = allAlreadyDL ? 'removed' : 'applied';
         res.json({
@@ -230,8 +372,11 @@ router.post('/duty-leave', auth, async (req, res) => {
         });
 
     } catch (err) {
+        if (session.inTransaction()) await session.abortTransaction();
         console.error('Duty Leave Error:', err);
         res.status(500).json({ error: 'Server Error' });
+    } finally {
+        session.endSession();
     }
 });
 

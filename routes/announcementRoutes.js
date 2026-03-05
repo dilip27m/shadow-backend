@@ -18,12 +18,12 @@ router.get('/:classId', async (req, res) => {
         // Announcements are time-sensitive; always bypass browser/proxy caches.
         res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
 
-        const sixDaysAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
+        const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
 
-        // Clean up overdue announcements (due date + 6 days passed)
+        // Clean up announcements whose due date passed more than 1 day ago
         await Announcement.deleteMany({
             classId: req.params.classId,
-            dueDate: { $ne: null, $lt: sixDaysAgo }
+            dueDate: { $ne: null, $lt: oneDayAgo }
         });
 
         // Backfill expiresAt for old announcements that have dueDate but no expiresAt
@@ -33,7 +33,7 @@ router.get('/:classId', async (req, res) => {
             expiresAt: null
         });
         for (const ann of needsBackfill) {
-            ann.expiresAt = new Date(new Date(ann.dueDate).getTime() + 6 * 24 * 60 * 60 * 1000);
+            ann.expiresAt = new Date(new Date(ann.dueDate).getTime() + 1 * 24 * 60 * 60 * 1000);
             await ann.save();
         }
 
@@ -61,10 +61,10 @@ router.post('/', auth, async (req, res) => {
             return res.status(403).json({ error: 'Unauthorized action for this class' });
         }
 
-        // Compute expiry: 6 days after due date
+        // Compute expiry: 1 day after due date
         let expiresAt = null;
         if (dueDate) {
-            expiresAt = new Date(new Date(dueDate).getTime() + 6 * 24 * 60 * 60 * 1000);
+            expiresAt = new Date(new Date(dueDate).getTime() + 1 * 24 * 60 * 60 * 1000);
         }
 
         const announcement = new Announcement({
@@ -80,11 +80,13 @@ router.post('/', auth, async (req, res) => {
         await announcement.save();
         res.status(201).json(announcement);
 
-        // Send push notification (non-blocking)
+        // Send push notification (non-blocking) — link to the student's attention page
         sendPushToClass(req.user.classId, {
             title: `📢 New Announcement`,
             body: announcement.title,
-            url: '/'
+            urlBuilder: (sub) => sub.rollNumber
+                ? `/student/${sub.classId}/${sub.rollNumber}/attention`
+                : '/'
         }).catch(() => { });
     } catch (err) {
         console.error(err);
@@ -112,9 +114,9 @@ router.patch('/:id', auth, async (req, res) => {
         if (subjectName !== undefined) announcement.subjectName = subjectName || 'General';
         if (dueDate !== undefined) {
             announcement.dueDate = dueDate || null;
-            // Recompute expiry when due date changes
+            // Recompute expiry: 1 day after due date
             if (dueDate) {
-                announcement.expiresAt = new Date(new Date(dueDate).getTime() + 6 * 24 * 60 * 60 * 1000);
+                announcement.expiresAt = new Date(new Date(dueDate).getTime() + 1 * 24 * 60 * 60 * 1000);
             } else {
                 announcement.expiresAt = null;
             }
