@@ -8,7 +8,7 @@
  * Usage: node scripts/migrateStudentRecords.js
  */
 
-require('dotenv').config();
+require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
 const mongoose = require('mongoose');
 const Attendance = require('../models/Attendance');
 const Classroom = require('../models/Classroom');

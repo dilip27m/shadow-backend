@@ -27,7 +27,7 @@ const StudentRecordSchema = new mongoose.Schema({
             periodNum: { type: Number, required: true },
             subjectId: { type: String },
             subjectName: { type: String },
-            status: { type: String, enum: ['Present', 'Absent'], required: true }
+            status: { type: String, enum: ['Present', 'Absent', 'Present (DL)'], required: true }
         }]
     }],
 

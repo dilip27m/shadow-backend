@@ -18,7 +18,6 @@ const getClassRollNumbers = (classroom) => {
             .filter(Boolean);
     }
 
-    // Legacy fallback for old class documents that only have totalStudents.
     const totalStudents = Number(classroom?.totalStudents);
     if (Number.isInteger(totalStudents) && totalStudents > 0) {
         return Array.from({ length: totalStudents }, (_, index) => String(index + 1));
@@ -27,7 +26,7 @@ const getClassRollNumbers = (classroom) => {
     return [];
 };
 
-// Issue student access token after validating class + roll membership
+// ── Issue student access token ─────────────────────────────────────────────
 router.post('/access', async (req, res) => {
     try {
         const className = String(req.body?.className || '').trim();
@@ -51,8 +50,8 @@ router.post('/access', async (req, res) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
-        // Check if the student is blocked (privacy opt-out)
-        const blockedRolls = (classroom.blockedRollNumbers || []).map(r => sanitizeRollNumber(r)).filter(Boolean);
+        const blockedRolls = (classroom.blockedRollNumbers || [])
+            .map(r => sanitizeRollNumber(r)).filter(Boolean);
         if (blockedRolls.includes(rollNumber)) {
             return res.status(403).json({ error: 'This roll number\'s attendance is set to private by the class admin.' });
         }
@@ -75,7 +74,7 @@ router.post('/access', async (req, res) => {
     }
 });
 
-// Get overall attendance report — O(1) lookup from StudentRecord
+// ── Overall attendance report — O(1) lookup from StudentRecord ────────────
 router.get('/report/:classId/:rollNumber', async (req, res) => {
     try {
         const { classId, rollNumber } = req.params;
@@ -84,14 +83,12 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
         if (!mongoose.Types.ObjectId.isValid(classId)) {
             return res.status(400).json({ error: 'Invalid Class ID' });
         }
-
         if (rollNo === null) {
             return res.status(400).json({ error: 'Invalid Roll Number' });
         }
 
         const classroom = await Classroom.findById(classId)
-            .select('className subjects rollNumbers totalStudents blockedRollNumbers')
-            .lean();
+            .select('className subjects rollNumbers totalStudents blockedRollNumbers').lean();
         if (!classroom) return res.status(404).json({ error: 'Class not found' });
 
         const classRollNumbers = getClassRollNumbers(classroom);
@@ -99,8 +96,8 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
-        // Check if the student is blocked (privacy opt-out)
-        const blockedRolls = (classroom.blockedRollNumbers || []).map(r => sanitizeRollNumber(r)).filter(Boolean);
+        const blockedRolls = (classroom.blockedRollNumbers || [])
+            .map(r => sanitizeRollNumber(r)).filter(Boolean);
         if (blockedRolls.includes(rollNo)) {
             return res.status(403).json({ error: 'This roll number\'s attendance is set to private by the class admin.' });
         }
@@ -122,7 +119,9 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
         const finalReport = classroom.subjects.map(subject => {
             const stat = statsMap[subject._id.toString()] || { totalClasses: 0, attendedClasses: 0 };
             const { totalClasses, attendedClasses } = stat;
-            const percentage = totalClasses === 0 ? 0 : parseFloat(((attendedClasses / totalClasses) * 100).toFixed(1));
+            const percentage = totalClasses === 0
+                ? 0
+                : parseFloat(((attendedClasses / totalClasses) * 100).toFixed(1));
 
             return {
                 _id: subject._id,
@@ -142,12 +141,12 @@ router.get('/report/:classId/:rollNumber', async (req, res) => {
         });
 
     } catch (err) {
-        console.error("Report Error:", err);
+        console.error('Report Error:', err);
         res.status(500).json({ error: 'Server Error' });
     }
 });
 
-// Get day-level attendance — read from StudentRecord dayLog
+// ── Day attendance — read from StudentRecord dayLog ────────────────────────
 router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
     try {
         const { classId, rollNumber, date } = req.params;
@@ -156,12 +155,12 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
         if (!mongoose.Types.ObjectId.isValid(classId)) {
             return res.status(400).json({ error: 'Invalid Class ID' });
         }
-
         if (rollNo === null) {
             return res.status(400).json({ error: 'Invalid Roll Number' });
         }
 
-        const classroom = await Classroom.findById(classId).select('rollNumbers totalStudents').lean();
+        const classroom = await Classroom.findById(classId)
+            .select('rollNumbers totalStudents').lean();
         if (!classroom) return res.status(404).json({ error: 'Class not found' });
 
         const classRollNumbers = getClassRollNumbers(classroom);
@@ -169,8 +168,8 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
             return res.status(404).json({ error: 'Student not found' });
         }
 
-        // Normalize date
-        const datePart = new Date(date).toISOString().split('T')[0];
+        // Fix: extract date part directly to avoid UTC→local day shift
+        const datePart = String(date).split('T')[0];
         const queryDate = new Date(`${datePart}T00:00:00.000Z`);
 
         // O(1) lookup
@@ -183,7 +182,6 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
             return res.json({ periods: [] });
         }
 
-        // Find the dayLog entry for the requested date
         const dayEntry = (studentRecord.dayLog || []).find(d => {
             const dDate = new Date(d.date).toISOString().split('T')[0];
             return dDate === datePart;
@@ -193,6 +191,8 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
             return res.json({ periods: [] });
         }
 
+        // Status is already stored correctly ('Present', 'Absent', 'Present (DL)')
+        // by syncStudentRecords in attendanceRoutes — no recomputation needed
         const periodsWithStatus = dayEntry.periods.map(p => ({
             periodNum: p.periodNum,
             subjectName: p.subjectName,
@@ -206,7 +206,7 @@ router.get('/day-attendance/:classId/:rollNumber/:date', async (req, res) => {
     }
 });
 
-// Get detailed history for a specific subject — read from StudentRecord dayLog
+// ── Subject history — read from StudentRecord dayLog ──────────────────────
 router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
     try {
         const { classId, rollNumber, subjectId } = req.params;
@@ -215,12 +215,12 @@ router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
         if (!mongoose.Types.ObjectId.isValid(classId)) {
             return res.status(400).json({ error: 'Invalid Class ID' });
         }
-
         if (rollNo === null) {
             return res.status(400).json({ error: 'Invalid Roll Number' });
         }
 
-        const classroom = await Classroom.findById(classId).select('rollNumbers totalStudents').lean();
+        const classroom = await Classroom.findById(classId)
+            .select('rollNumbers totalStudents').lean();
         if (!classroom) return res.status(404).json({ error: 'Class not found' });
 
         const classRollNumbers = getClassRollNumbers(classroom);
@@ -238,13 +238,12 @@ router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
             return res.json({ history: [] });
         }
 
-        // Filter dayLog entries that contain the requested subject
-        const history = [];
-
         // Sort dayLog by date descending (newest first)
         const sortedDayLog = (studentRecord.dayLog || [])
             .slice()
             .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        const history = [];
 
         sortedDayLog.forEach(day => {
             const relevantPeriods = (day.periods || []).filter(
@@ -254,7 +253,7 @@ router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
             relevantPeriods.forEach(p => {
                 history.push({
                     date: day.date,
-                    status: p.status,
+                    status: p.status,   // already 'Present', 'Absent', or 'Present (DL)'
                     periodNum: p.periodNum
                 });
             });
@@ -263,10 +262,9 @@ router.get('/history/:classId/:rollNumber/:subjectId', async (req, res) => {
         res.json({ history });
 
     } catch (err) {
-        console.error("History Error:", err);
+        console.error('History Error:', err);
         res.status(500).json({ error: 'Server Error' });
     }
 });
 
 module.exports = router;
-
