@@ -19,8 +19,13 @@ const promotionSchema = new mongoose.Schema({
     },
     linkUrl: {
         type: String,
-        required: [true, 'Please provide a link URL'],
-        trim: true
+        trim: true,
+        default: ''
+    },
+    contactDetails: {
+        type: String,
+        trim: true,
+        default: ''
     },
     status: {
         type: String,

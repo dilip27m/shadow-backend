@@ -14,6 +14,7 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.9.0",
     "compression": "^1.7.4",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
@@ -21,9 +22,11 @@
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.1.4",
     "mongodb": "^7.0.0",
+    "mongoose": "^9.1.4",
     "morgan": "^1.10.0",
+    "multer": "^2.1.1",
+    "multer-storage-cloudinary": "^4.0.0",
     "node-cron": "^4.2.1",
     "web-push": "^3.6.7"
   },

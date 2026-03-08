@@ -5,10 +5,10 @@ const Promotion = require('../models/Promotion');
 // @access  Public (Any student can submit)
 exports.createPromotion = async (req, res) => {
     try {
-        const { title, description, imageUrl, linkUrl, submittedBy } = req.body;
+        const { title, description, imageUrl, linkUrl, contactDetails, submittedBy } = req.body;
 
-        if (!title || !description || !linkUrl || !submittedBy) {
-            return res.status(400).json({ success: false, message: 'Please provide all required fields (title, description, linkUrl, submittedBy)' });
+        if (!title || !description || !submittedBy) {
+            return res.status(400).json({ success: false, message: 'Please provide all required fields (title, description, submittedBy)' });
         }
 
         const promotion = await Promotion.create({
@@ -16,6 +16,7 @@ exports.createPromotion = async (req, res) => {
             description,
             imageUrl: imageUrl || '',
             linkUrl,
+            contactDetails,
             submittedBy
         });
 
@@ -154,19 +155,20 @@ exports.toggleUpvote = async (req, res) => {
         // Check if user already upvoted
         const hasUpvoted = promotion.upvotes.includes(userId);
 
+        let updateQuery = {};
         if (hasUpvoted) {
             // Remove upvote
-            promotion.upvotes = promotion.upvotes.filter(uid => uid !== userId);
+            updateQuery = { $pull: { upvotes: userId } };
         } else {
             // Add upvote
-            promotion.upvotes.push(userId);
+            updateQuery = { $addToSet: { upvotes: userId } };
         }
 
-        await promotion.save();
+        const updatedPromotion = await Promotion.findByIdAndUpdate(id, updateQuery, { new: true });
 
         res.status(200).json({
             success: true,
-            upvotes: promotion.upvotes.length,
+            upvotes: updatedPromotion.upvotes.length,
             hasUpvoted: !hasUpvoted
         });
     } catch (error) {

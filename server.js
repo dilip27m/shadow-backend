@@ -15,6 +15,7 @@ const announcementRoutes = require('./routes/announcementRoutes');
 const aiRoutes = require('./routes/aiRoutes');
 const pushRoutes = require('./routes/pushRoutes');
 const promotionRoutes = require('./routes/promotionRoutes');
+const uploadRoutes = require('./routes/uploadRoutes');
 const { startReminderCron } = require('./scripts/reminderCron');
 
 const app = express();
@@ -93,6 +94,7 @@ app.use('/api/announcements', announcementRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/promotions', promotionRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // Health check
 app.get('/', (req, res) => {
