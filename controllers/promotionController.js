@@ -176,3 +176,27 @@ exports.toggleUpvote = async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error while updating upvote' });
     }
 };
+
+// @desc    Record views for promotions
+// @route   POST /api/promotions/views
+// @access  Public
+exports.recordViews = async (req, res) => {
+    try {
+        const { promoIds, userId } = req.body;
+
+        if (!userId || !promoIds || !Array.isArray(promoIds) || promoIds.length === 0) {
+            return res.status(400).json({ success: false, message: 'Invalid data' });
+        }
+
+        // Add userId to views array for all specified promotion IDs if not already there
+        await Promotion.updateMany(
+            { _id: { $in: promoIds } },
+            { $addToSet: { views: userId } }
+        );
+
+        res.status(200).json({ success: true, message: 'Views recorded' });
+    } catch (error) {
+        console.error('Error recording views:', error);
+        res.status(500).json({ success: false, message: 'Server error while tracking views' });
+    }
+};

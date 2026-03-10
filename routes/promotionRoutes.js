@@ -22,6 +22,9 @@ router.put('/:id/status', updatePromotionStatus);
 // Public route to get promotions by ID array (My Pitches)
 router.post('/my-pitches', require('../controllers/promotionController').getMyPromotions);
 
+// Public route to record views
+router.post('/views', require('../controllers/promotionController').recordViews);
+
 // Public route to toggle upvote
 router.post('/:id/upvote', require('../controllers/promotionController').toggleUpvote);
 

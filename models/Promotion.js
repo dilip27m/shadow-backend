@@ -40,6 +40,10 @@ const promotionSchema = new mongoose.Schema({
     upvotes: {
         type: [String],
         default: []
+    },
+    views: {
+        type: [String],
+        default: []
     }
 }, {
     timestamps: true
