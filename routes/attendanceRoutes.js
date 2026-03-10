@@ -253,6 +253,7 @@ router.post('/mark', auth, async (req, res) => {
 
         res.json({ message: 'Attendance Saved Successfully!', data: updatedRecord });
 
+        /*
         if (normalizedPeriods.length > 0) {
             Classroom.findById(classId).select('className').lean()
                 .then(cls => {
@@ -268,6 +269,7 @@ router.post('/mark', auth, async (req, res) => {
                 })
                 .catch(() => { });
         }
+        */
 
     } catch (err) {
         if (session.inTransaction()) await session.abortTransaction();
