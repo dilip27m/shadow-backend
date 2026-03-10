@@ -44,6 +44,10 @@ const promotionSchema = new mongoose.Schema({
     views: {
         type: [String],
         default: []
+    },
+    clicks: {
+        type: [String],
+        default: []
     }
 }, {
     timestamps: true

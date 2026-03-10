@@ -28,4 +28,7 @@ router.post('/views', require('../controllers/promotionController').recordViews)
 // Public route to toggle upvote
 router.post('/:id/upvote', require('../controllers/promotionController').toggleUpvote);
 
+// Public route to record external link click
+router.post('/:id/click', require('../controllers/promotionController').recordClick);
+
 module.exports = router;

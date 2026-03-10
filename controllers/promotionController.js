@@ -200,3 +200,37 @@ exports.recordViews = async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error while tracking views' });
     }
 };
+
+// @desc    Record click for a promotion
+// @route   POST /api/promotions/:id/click
+// @access  Public
+exports.recordClick = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { userId } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ success: false, message: 'User ID is required' });
+        }
+
+        // Add userId to clicks array if not already there
+        const promotion = await Promotion.findByIdAndUpdate(
+            id,
+            { $addToSet: { clicks: userId } },
+            { new: true }
+        );
+
+        if (!promotion) {
+            return res.status(404).json({ success: false, message: 'Promotion not found' });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Click recorded',
+            clicks: promotion.clicks.length
+        });
+    } catch (error) {
+        console.error('Error recording click:', error);
+        res.status(500).json({ success: false, message: 'Server error while tracking click' });
+    }
+};
