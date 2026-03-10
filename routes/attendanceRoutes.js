@@ -19,6 +19,21 @@ const sanitizeRollNumber = (value) => {
     return cleaned || null;
 };
 
+const getClassRollNumbers = (classroom) => {
+    if (Array.isArray(classroom?.rollNumbers) && classroom.rollNumbers.length > 0) {
+        return classroom.rollNumbers
+            .map((roll) => sanitizeRollNumber(roll))
+            .filter(Boolean);
+    }
+
+    const totalStudents = Number(classroom?.totalStudents);
+    if (Number.isInteger(totalStudents) && totalStudents > 0) {
+        return Array.from({ length: totalStudents }, (_, index) => String(index + 1));
+    }
+
+    return [];
+};
+
 const deduplicateRolls = (arr) => {
     if (!Array.isArray(arr)) return [];
     const seen = new Set();
@@ -71,15 +86,13 @@ const getPeriodStatus = (period, rollNumber) => {
  */
 const syncStudentRecords = async (classId, searchDate, periodsToSync, session) => {
     const classroom = await Classroom.findById(classId)
-        .select('rollNumbers subjects')
+        .select('rollNumbers subjects totalStudents')
         .session(session)
         .lean();
 
-    if (!classroom || !Array.isArray(classroom.rollNumbers)) return;
+    if (!classroom) return;
 
-    const rollNumbers = classroom.rollNumbers
-        .map(r => sanitizeRollNumber(r))
-        .filter(Boolean);
+    const rollNumbers = getClassRollNumbers(classroom);
 
     if (rollNumbers.length === 0) return;
 
